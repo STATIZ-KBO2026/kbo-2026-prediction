@@ -1,0 +1,13 @@
+﻿# --- secrets ---
+.env
+*.pem
+
+# --- generated data / logs (DO NOT COMMIT) ---
+data/
+logs/
+__pycache__/
+*.log
+
+# --- OS ---
+.DS_Store
+Thumbs.db
