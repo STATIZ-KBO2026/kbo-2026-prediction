@@ -9,6 +9,7 @@
 
 ## 0) 한 장 요약 (Pipeline at a glance)
 
+~~~mermaid
 flowchart TD
   S["A. gameSchedule 날짜별 수집"] --> I["B. game_index_played.csv 생성"]
   I --> D["C. gameLineup / gameBoxscore 수집"]
@@ -18,6 +19,7 @@ flowchart TD
   R --> T["G. playerday_long CSV 생성"]
   T --> F["H. features_v0.csv 생성"]
   F --> B["I. expanding/online 백테스트"]
+~~~
 
 ---
 
