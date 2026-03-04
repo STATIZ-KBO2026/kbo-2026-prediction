@@ -22,11 +22,11 @@
 
 ~~~mermaid
 flowchart LR
-  A[STATIZ Prediction API] --> B[raw JSON 저장<br/>(raw_schedule/raw_lineup/...)]
-  B --> C[테이블화<br/>(game_index / lineup_long / playerday_long)]
-  C --> D[피처 생성<br/>(features_v0.csv)]
-  D --> E[백테스트<br/>(expanding/online)]
-  E --> F[제출 자동화<br/>(POST prediction)]
+  A["STATIZ Prediction API"] --> B["raw JSON 저장\n(raw_schedule / raw_lineup / raw_boxscore / raw_playerday)"]
+  B --> C["테이블화\n(game_index / lineup_long / playerday_long)"]
+  C --> D["피처 생성\n(features_v0.csv)"]
+  D --> E["백테스트\n(expanding/online)"]
+  E --> F["제출 자동화\n(POST prediction)"]
 ~~~
 
 ---

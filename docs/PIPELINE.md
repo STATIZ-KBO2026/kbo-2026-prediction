@@ -9,17 +9,15 @@
 
 ## 0) 한 장 요약 (Pipeline at a glance)
 
-~~~mermaid
 flowchart TD
-  S[gameSchedule 날짜별 수집] --> I[game_index_played.csv 생성]
-  I --> D[gameLineup / gameBoxscore 수집]
-  D --> L[lineup_long.csv 생성]
-  L --> P[player_year_index.csv 생성]
-  P --> R[playerDay (p_no,year) 수집]
-  R --> T[playerday_*_long.csv 생성]
-  T --> F[features_v0.csv 생성]
-  F --> B[expanding/online 백테스트]
-~~~
+  S["A. gameSchedule 날짜별 수집"] --> I["B. game_index_played.csv 생성"]
+  I --> D["C. gameLineup / gameBoxscore 수집"]
+  D --> L["D. lineup_long.csv 생성"]
+  L --> P["E. player_year_index.csv 생성"]
+  P --> R["F. playerDay (p_no, year) 수집"]
+  R --> T["G. playerday_long CSV 생성"]
+  T --> F["H. features_v0.csv 생성"]
+  F --> B["I. expanding/online 백테스트"]
 
 ---
 
