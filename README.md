@@ -1,250 +1,115 @@
-# \# STATIZ KBO 2026 승부예측 (팀 프로젝트)
+# 🧢 STATIZ KBO 2026 승부예측 (팀 프로젝트)
 
-# 
+**STATIZ Prediction API → 데이터 파이프라인 → 백테스트 → 제출**까지 팀이 같은 기준으로 재현 가능하게 만들기 위한 레포입니다.
 
-# 이 레포는 \*\*STATIZ Prediction API\*\*로부터 데이터를 받아 \*\*백테스트 가능한 형태(경기 1개 = 1행)\*\*로 정리하고, 이후 모델 실험/제출까지 이어지는 파이프라인을 팀이 함께 관리하기 위한 공간입니다.
+> ⚠️ 공지 기준: **대회 데이터는 2023년부터 사용 가능**  
+> → 파이프라인의 기본 수집 기간도 2023~로 맞춰 실행하는 것을 권장합니다.
 
-# 
+---
 
-# ---
+## 🔎 한눈에 보기 (TL;DR)
 
-# 
+이 레포에서 할 수 있는 것
 
-# \## 지금까지 어디까지 했나? (현재 진행상태)
+- ✅ STATIZ Prediction API 데이터 **자동 수집**
+- ✅ raw JSON → 분석 가능한 **테이블(CSV) 변환**
+- ✅ **경기 1개 = 1행** 피처 테이블 생성 (룩어헤드 방지)
+- ✅ **expanding/online** 방식 백테스트로 재현 가능한 실험
 
-# 
+---
 
-# 현재(2026-03-01 기준)까지 아래 단계까지 “재현 가능”하게 구현되어 있습니다.
+## 🗺️ Project Map (파이프라인 맵)
 
-# 
+~~~mermaid
+flowchart LR
+  A[STATIZ Prediction API] --> B[raw JSON 저장<br/>(raw_schedule/raw_lineup/...)]
+  B --> C[테이블화<br/>(game_index / lineup_long / playerday_long)]
+  C --> D[피처 생성<br/>(features_v0.csv)]
+  D --> E[백테스트<br/>(expanding/online)]
+  E --> F[제출 자동화<br/>(POST prediction)]
+~~~
 
-# 1\) \*\*(경기 인덱스) 2022~2025 정규시즌 경기 목록 구축\*\*
+---
 
-# \- `GET /prediction/gameSchedule` 를 날짜별로 호출해 원본 JSON 저장
+## 📦 레포 구성 (Repository Layout)
 
-# \- 여기서 경기번호 `s\_no`를 뽑아 `game\_index.csv` 생성
+- `scripts/` : 수집/가공/백테스트 코드
+- `docs/` : 실행 가이드(PIPELINE), 운영 규칙
+- `data/`, `logs/` : **로컬(EC2)에서 생성되는 산출물 위치** (기본적으로 깃에 커밋 X)
 
-# \- “취소/기록 없음/시범경기” 등을 제외하고, 실제 치러진 정규시즌만 필터링하여  
+---
 
-# &nbsp; `game\_index\_played.csv` (총 \*\*2870경기\*\*) 생성
+## ✅ 현재 진행상태 (체크리스트)
 
-# 
+- [x] 스케줄 기반 경기 인덱스 생성 (`gameSchedule → game_index_played.csv`)
+- [x] 경기 상세 수집 (`gameLineup`, `gameBoxscore`)
+- [x] 라인업 테이블 생성 (`lineup_long.csv`)
+- [x] playerDay 수집(라인업 등장 선수만) + 테이블화
+- [x] 룩어헤드 없는 피처 테이블 생성 (`features_v0.csv`)
+- [x] 베이스라인 백테스트 실행(파이프라인 검증용)
 
-# 2\) \*\*(경기 상세) 2870경기 전체 라인업/박스스코어 수집\*\*
+- [ ] 피처 개선(전년도/커리어 prior, 최근 N경기 폼 등)
+- [ ] 모델 고도화(LightGBM/CatBoost) + 확률 캘리브레이션
+- [ ] 제출 자동화(당일 스케줄 → 라인업 → 예측 → POST)
 
-# \- `GET /prediction/gameLineup` → `raw\_lineup/{s\_no}.json`
+---
 
-# \- `GET /prediction/gameBoxscore` → `raw\_boxscore/{s\_no}.json`
+## 🚀 Quick Start (팀원이 바로 실행)
 
-# \- 누락/에러 파일 없이 수집 완료
+> 전제: STATIZ API는 **허용 IP(화이트리스트)** 기반일 수 있어 **EC2(등록된 고정 IP)에서 실행** 권장  
+> 개인 PC(Postman)로는 403이 날 수 있습니다.
 
-# 
+### 1) Key/Secret 환경변수 설정 (필수)
+~~~bash
+export STATIZ_API_KEY="..."
+export STATIZ_SECRET="..."
+python3 -c "import os; print('KEY OK' if os.getenv('STATIZ_API_KEY') else 'KEY NO'); print('SECRET OK' if os.getenv('STATIZ_SECRET') else 'SECRET NO')"
+~~~
 
-# 3\) \*\*(테이블화) 라인업을 long 포맷 CSV로 변환\*\*
+### 2) 실행 순서
+👉 `docs/PIPELINE.md`를 그대로 따라가면 됩니다.
 
-# \- `lineup\_long.csv` 생성 (경기/팀/타순/포지션/선수번호 등)
+---
 
-# 
+## 🧰 스크립트 목록 (팀원이 실제로 쓰는 것)
 
-# 4\) \*\*(선수 기록) 라인업 기반으로 필요한 선수만 골라 playerDay 수집\*\*
+| 목적 | 스크립트 | 주요 산출물 |
+|---|---|---|
+| 날짜별 스케줄 raw 저장 | `scripts/download_schedule.py` | `data/raw_schedule/YYYYMMDD.json` |
+| 경기 인덱스 생성 | `scripts/build_game_index.py` | `data/game_index_played.csv` |
+| 라인업/박스스코어 raw 저장 | `scripts/download_game_details.py` | `data/raw_lineup/*.json`, `data/raw_boxscore/*.json` |
+| 라인업 테이블 생성 | `scripts/build_lineup_table.py` | `data/lineup_long.csv` |
+| (p_no,year) 인덱스 생성 | `scripts/build_player_year_index.py` | `data/player_year_index.csv` |
+| playerDay raw 저장 | `scripts/download_playerday.py` | `data/raw_playerday/*.json` |
+| playerDay 테이블 생성 | `scripts/build_playerday_tables_v2.py` | `data/playerday_*_long.csv` |
+| 피처 생성(베이스라인) | `scripts/build_features_v0.py` | `data/features_v0.csv` |
+| 베이스라인 백테스트 | `scripts/backtest_v0_online_lr.py` | `data/backtest_pred_v0.csv` |
 
-# \- 라인업에 실제로 등장한 선수들 기준으로 `(p\_no, year)` 목록 생성  
+---
 
-# &nbsp; `player\_year\_index.csv` (총 \*\*1531 조합\*\*, 선수 \*\*681명\*\*)
+## 🔒 보안 / 협업 규칙 (중요)
 
-# \- `GET /prediction/playerDay` 를 해당 조합만 호출해 원본 JSON 저장
+**절대 커밋 금지**
+- API Key/Secret, `.env`, `.pem`
+- `data/raw_*` (원본 JSON)
+- 대용량 산출물 CSV(원칙적으로 로컬 생성)
 
-# \- 이를 테이블로 펼쳐:
+데이터 공유가 급하면:
+- `features_v0.csv` 같은 “가공된 소형 결과물”만 별도로 공유(드라이브/카톡 등) 권장
 
-# &nbsp; - `playerday\_batter\_long.csv` (약 7만 행)
+---
 
-# &nbsp; - `playerday\_pitcher\_long.csv` (약 1만 행)
+## 🧭 다음 실험 방향 (Roadmap)
 
-# 
+성능을 올리려면 보통 아래 순서가 효율적입니다.
 
-# 5\) \*\*(피처 생성) 룩어헤드 없는 베이스라인 피처 생성\*\*
+1) 시즌 초반/신인/복귀 선수 처리  
+   - 전년도/커리어 prior로 “기록 없음” 구간 보완
+2) 최근 N경기 폼(rolling), 홈/원정, 구장(s_code), 날씨 등 컨텍스트
+3) 모델: LightGBM/CatBoost + 확률 캘리브레이션
+4) expanding window 평가를 시즌 단위로 더 정교하게
 
-# \- `features\_v0.csv` 생성 (\*\*2870행\*\*, 경기 1개 = 1행)
+---
 
-# \- 핵심 원칙: \*\*해당 경기 “전날까지”의 누적 기록만 사용\*\*(expanding/online 방식)
-
-# 
-
-# 6\) \*\*(베이스라인 백테스트)\*\*
-
-# \- 온라인 로지스틱 회귀(매일 예측 → 그날 결과로 학습 업데이트) 베이스라인 실행 가능  
-
-# &nbsp; 단, 현재 성능은 거의 랜덤(피처/모델 모두 매우 단순한 상태)
-
-# 
-
-# ---
-
-# 
-
-# \## 왜 Postman이 아니라 EC2에서 돌리나?
-
-# 
-
-# STATIZ API는 \*\*IP 화이트리스트(허용 IP)\*\* 기반으로 접근이 제한됩니다.  
-
-# 즉, 팀에서 등록한 고정 IP(예: AWS EC2 Elastic IP)에서만 호출이 가능하고, 개인 PC에서 Postman으로 호출하면 `403 허용되지 않은 IP`가 뜰 수 있습니다.
-
-# 
-
-# 그래서 이 파이프라인은 기본적으로 \*\*화이트리스트에 등록된 서버(EC2)에서 실행\*\*하는 것을 전제로 작성되어 있습니다.
-
-# 
-
-# ---
-
-# 
-
-# \## 레포 구조(권장)
-
-# 
-
-# 이 레포는 “코드”만 버전관리하고, “데이터(원본/대용량)”는 로컬에서 생성하는 방식이 안전합니다.
-
-# 
-
-# ```
-
-# scripts/     # 수집/가공/백테스트 스크립트
-
-# docs/        # 실행 순서, 규칙, 운영 메모
-
-# data/        # (로컬 생성물) raw\_\*/csv가 쌓이는 위치 (git에는 올리지 않음)
-
-# logs/        # (로컬 생성물) nohup 실행 로그
-
-# ```
-
-# 
-
-# > 주의: API Key/Secret, pem 키 파일, raw JSON 전체는 절대 커밋 금지
-
-# 
-
-# ---
-
-# 
-
-# \## 빠른 시작(팀원이 “바로 따라할 수 있게”)
-
-# 
-
-# 실행 순서는 `docs/PIPELINE.md`에 단계별로 자세히 적어두었습니다.  
-
-# 핵심 흐름은 아래처럼 이해하면 됩니다.
-
-# 
-
-# 1\) 환경변수 설정  
-
-# \- `STATIZ\_API\_KEY`, `STATIZ\_SECRET` 를 \*\*환경변수로만\*\* 설정 (코드에 하드코딩 금지)
-
-# 
-
-# 2\) 경기 인덱스 생성  
-
-# \- `download\_schedule.py` → `build\_game\_index.py` → `game\_index\_played.csv`
-
-# 
-
-# 3\) 경기 상세 수집(라인업/박스스코어)  
-
-# \- `download\_game\_details.py`
-
-# 
-
-# 4\) 라인업/선수기록 테이블 생성  
-
-# \- `build\_lineup\_table.py`  
-
-# \- `build\_player\_year\_index.py`  
-
-# \- `download\_playerday.py`  
-
-# \- `build\_playerday\_tables\_v2.py`
-
-# 
-
-# 5\) 피처 생성 \& 백테스트  
-
-# \- `build\_features\_v0.py`  
-
-# \- `backtest\_v0\_online\_lr.py`
-
-# 
-
-# ---
-
-# 
-
-# \## 보안/협업 규칙(사고 방지)
-
-# 
-
-# \- \*\*절대 커밋 금지\*\*
-
-# &nbsp; - API Key/Secret
-
-# &nbsp; - `.pem` 키 파일
-
-# &nbsp; - `data/raw\_\*` (원본 JSON)
-
-# &nbsp; - 대용량 csv(필요 시 따로 공유)
-
-# \- 데이터 공유가 급하면:
-
-# &nbsp; - `features\_v0.csv` 같은 “가공된 결과물”만 카톡/드라이브로 공유하거나
-
-# &nbsp; - 레포를 Private로 전환 후 제한적으로 공유 권장
-
-# 
-
-# ---
-
-# 
-
-# \## 다음 할 일(TODO)
-
-# 
-
-# 현재 파이프라인은 “수집/정리/룩어헤드 없는 피처 생성”까지 완료된 상태입니다.  
-
-# 다음은 모델 성능을 올리는 실험 단계로 넘어갑니다.
-
-# 
-
-# \- 피처 개선
-
-# &nbsp; - 시즌 초반/신인/복귀선수 문제를 위한 \*\*전년도 prior / 커리어 prior\*\*
-
-# &nbsp; - 최근 N경기 폼(rolling), 홈/원정 스플릿, 구장 효과(s\_code), 날씨 등
-
-# &nbsp; - 불펜/수비/팀 컨텍스트 추가(가능 범위에서)
-
-# \- 모델
-
-# &nbsp; - LightGBM / CatBoost 등 트리 기반 모델
-
-# &nbsp; - 캘리브레이션(확률 예측 안정화)
-
-# \- 평가
-
-# &nbsp; - expanding window / 시계열 분할을 더 정교하게 설계
-
-# &nbsp; - 최종 제출 API(POST) 자동화
-
-# 
-
-# ---
-
-# 
-
-# \## 문의/연락
-
-# 파이프라인 실행이 막히면(특히 IP/키/권한 문제) `docs/PIPELINE.md`의 “트러블슈팅”을 먼저 확인해주세요.
-
+## 🙋‍♀️ 도움이 필요하면
+막히는 지점이 생기면 `docs/PIPELINE.md`의 트러블슈팅을 먼저 확인하고, 그래도 안 되면 에러 로그/상황을 팀 채팅에 공유해주세요.
