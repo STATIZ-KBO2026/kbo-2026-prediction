@@ -1,13 +1,13 @@
-﻿#!/usr/bin/env python3
-# build_features_v2_candidates.py
-#
-# Candidate feature table (v2):
-# - keeps v1 core 4 features
-# - adds candidate features for automated subset search
-# - uses only 2023+ internally
-# - writes rows for 2024+ only
-# - builds each game with D-1 information only
+﻿"""
+?? v1 ?? 4??? ?? ?? ??? ???, ?? subset ??? ?? ???? ??? ??????.
 
+?? ??
+- ?? ??? 2023+ ? ????.
+- ?? ?? ?? 2024+ ? ???.
+- ??? D? ??? ??? D-1?? ??? ????.
+
+? ????? `?? ?? ??? ?? ?? ?, ?? ???? ????` ? ?? ???? ??? ?? ????.
+"""
 import os
 import csv
 from collections import defaultdict, deque
@@ -60,6 +60,7 @@ FALLBACK_PRIOR_OPS = 0.700
 
 
 def safe_int(x, default=0):
+    """?? ??? ??? ?? ???? ??? ???."""
     try:
         if x is None:
             return default
@@ -72,6 +73,7 @@ def safe_int(x, default=0):
 
 
 def safe_float(x, default=0.0):
+    """?? ??? ??? ?? ???? ??? ???."""
     try:
         if x is None:
             return default
@@ -84,14 +86,17 @@ def safe_float(x, default=0.0):
 
 
 def yyyymmdd_to_dt(s):
+    """YYYYMMDD ???? datetime?? ???."""
     return datetime.strptime(s, "%Y%m%d")
 
 
 def dt_to_yyyymmdd(d):
+    """datetime? YYYYMMDD ???? ???."""
     return d.strftime("%Y%m%d")
 
 
 def calc_ops_from_counts(H, BB, HP, AB, SF, TB):
+    """??? ???? OPS? PA? ????."""
     denom_obp = AB + BB + HP + SF
     obp = (H + BB + HP) / denom_obp if denom_obp else 0.0
     slg = TB / AB if AB else 0.0
@@ -99,12 +104,14 @@ def calc_ops_from_counts(H, BB, HP, AB, SF, TB):
 
 
 def smooth_value(curr_val, curr_w, prior_val, k):
+    """?? ??? prior? ????? ???? ?? ???."""
     if curr_w < 0:
         curr_w = 0
     return (curr_w / (curr_w + k)) * curr_val + (k / (curr_w + k)) * prior_val
 
 
 def ip_to_outs(ip_val):
+    """KBO? ?? ??(?: 6.1, 6.2)? ?????? ???."""
     s = str(ip_val).strip()
     if s == "" or s.lower() == "none":
         return 0
@@ -120,6 +127,7 @@ def ip_to_outs(ip_val):
 
 
 def pythag_winpct(rs, ra, exp=PYTHAG_EXP):
+    """??/???? ????? ????? ????."""
     rs = max(0.0, float(rs))
     ra = max(0.0, float(ra))
     if rs == 0 and ra == 0:
@@ -131,6 +139,7 @@ def pythag_winpct(rs, ra, exp=PYTHAG_EXP):
 
 
 def result_point(score_for, score_against):
+    """?=1, ?=0, ?=0.5 ???? ?? ??? ???? ???."""
     if score_for > score_against:
         return 1.0
     if score_for < score_against:
@@ -139,6 +148,7 @@ def result_point(score_for, score_against):
 
 
 def batter_hand_from_p_bat(p_bat):
+    """API? ?? ? ???? R/L/S ??? ???."""
     # API docs (teamRecord pt): 1=R, 2=L, 3=S
     if p_bat == 1:
         return "R"
@@ -150,6 +160,7 @@ def batter_hand_from_p_bat(p_bat):
 
 
 def pitcher_hand_from_p_throw(p_throw):
+    """API? ?? ? ???? R/L ??? ???."""
     # API docs (pitcher type): 1/2 right variants, 3/4 left variants
     if p_throw in (1, 2):
         return "R"
@@ -159,6 +170,7 @@ def pitcher_hand_from_p_throw(p_throw):
 
 
 def get_save_from_row(row):
+    """?? ??? ??? ??? ??? ?? ???."""
     for key in ("SV", "sv", "Save", "save", "S"):
         if key in row:
             return safe_int(row.get(key))
@@ -166,6 +178,7 @@ def get_save_from_row(row):
 
 
 def get_hold_from_row(row):
+    """?? ??? ??? ??? ?? ?? ???."""
     for key in ("HLD", "HD", "hld", "hd", "Hold", "hold"):
         if key in row:
             return safe_int(row.get(key))
@@ -173,10 +186,12 @@ def get_hold_from_row(row):
 
 
 def get_svhld_from_row(row):
+    """???+??? ?? ?? ??? ??? ???."""
     return get_save_from_row(row) + get_hold_from_row(row)
 
 
 def load_games():
+    """2023+ ?? ?? ??? ????? ???."""
     games = []
     with open(GAMES_CSV, "r", encoding="utf-8") as f:
         r = csv.DictReader(f)
@@ -194,6 +209,7 @@ def load_games():
 
 
 def load_lineup_map():
+    """??? ????? 1~9? ??, ? ??? ??? ?? ?? ???."""
     # lineup_map[s_no][side]:
     #   - P: {"p_no","p_throw","p_bat"}
     #   - batters[1..9]: {"p_no","p_bat","p_throw"}
@@ -232,6 +248,7 @@ def load_lineup_map():
 
 
 def group_by_date(csv_path):
+    """???? ?? ?? D-1 ?? ???? ??? ???? ?? ???."""
     by_date = defaultdict(list)
     with open(csv_path, "r", encoding="utf-8") as f:
         r = csv.DictReader(f)
@@ -292,6 +309,7 @@ def main():
     stadium_runs = defaultdict(lambda: {"R": 0, "G": 0})  # (stadium, year)
 
     def league_ops(year):
+        """?? ?? ?? prior? ??? ? ? ?? ?? OPS? ????."""
         tot = league_bat_tot.get(year)
         if not tot:
             return FALLBACK_PRIOR_OPS
@@ -301,6 +319,7 @@ def main():
         return val if val > 0 else FALLBACK_PRIOR_OPS
 
     def league_bbip(year):
+        """?? ?? ?? prior? ??? ? ? ?? ?? BB/IP? ????."""
         tot = league_pit_tot.get(year)
         if not tot:
             return FALLBACK_PRIOR_BBIP
@@ -311,18 +330,21 @@ def main():
         return (tot["BB"] / ip) if ip > 0 else FALLBACK_PRIOR_BBIP
 
     def team_prev_winpct(team, year):
+        """?? ?? ? ??? ?? ? prior? ???? ?? ????."""
         prev = team_wins.get((team, year - 1))
         if not prev or prev["G"] <= 0:
             return 0.5
         return prev["WPTS"] / prev["G"]
 
     def league_rpg(year):
+        """???? ??? ??? ?? ?? ??? ??? ????."""
         rec = league_game_runs.get(year)
         if not rec or rec["G"] <= 0:
             return None
         return rec["R"] / rec["G"]
 
     def batter_ops_smooth(p_no, year):
+        """??? ?? OPS? ?? ?? ?? ?? ??? ?? ?????."""
         cur = bat_cum[(p_no, year)]
         cur_ops, cur_pa = calc_ops_from_counts(
             cur["H"], cur["BB"], cur["HP"], cur["AB"], cur["SF"], cur["TB"]
@@ -341,6 +363,7 @@ def main():
         return smooth, cur_pa
 
     def batter_ops_recent_or_smooth(p_no, year, ops_smooth_val):
+        """?? 5?? OPS? ??? ??? ??? OPS_smooth? ????."""
         dq = bat_recent[(p_no, year)]
         if not dq:
             return ops_smooth_val, 0
@@ -358,6 +381,7 @@ def main():
         return ops_recent, pa_recent
 
     def pitcher_allowed_ops_smooth(p_no, year):
+        """???? ?OPS? ???? ?? ???? ????."""
         cur = pit_cum[(p_no, year)]
         cur_ops, _ = calc_ops_from_counts(
             cur["H"], cur["BB"], cur["HP"], cur["AB"], cur["SF"], cur["TB"]
@@ -378,6 +402,7 @@ def main():
         return smooth, cur_bf
 
     def pitcher_bbip_smooth(p_no, year):
+        """???? BB/IP? prior? ?? ?? ? ???? ???."""
         cur = pit_cum[(p_no, year)]
         cur_ip = cur["OUTS"] / 3.0 if cur["OUTS"] > 0 else 0.0
         cur_val = (cur["BB"] / cur_ip) if cur_ip > 0 else 0.0
@@ -394,6 +419,7 @@ def main():
         return smooth, cur_ip
 
     def team_pythag_smooth(team, year):
+        """? ?? ??? ?? ????? ??? prior? ?? ????."""
         cur = team_runs[(team, year)]
         cur_val = pythag_winpct(cur["RS"], cur["RA"], PYTHAG_EXP)
         cur_w = cur["G"]
@@ -407,6 +433,7 @@ def main():
         return smooth_value(cur_val, cur_w, prior, K_PYTHAG_GAMES)
 
     def team_recent10_winpct_smooth(team, year):
+        """?? 10?? ??? ???? ?? ??? ?? ?? ??? ???."""
         dq = team_recent_results[(team, year)]
         if dq:
             cur_val = sum(dq) / len(dq)
@@ -418,6 +445,7 @@ def main():
         return smooth_value(cur_val, cur_w, prior, K_RECENT10_GAMES)
 
     def team_stadium_winpct_smooth(team, year, stadium):
+        """?? ????? ? ??? ?? ? prior? ?? ?????."""
         cur = team_stadium_wins[(team, year, stadium)]
         if cur["G"] > 0:
             cur_val = cur["WPTS"] / cur["G"]
@@ -434,6 +462,7 @@ def main():
         return smooth_value(cur_val, cur_w, prior, K_STADIUM_WIN_GAMES)
 
     def stadium_park_factor_smooth(stadium, year):
+        """?? ??? ?? ??? ?? ?? ?? ??? ??? ????? ????."""
         cur = stadium_runs[(stadium, year)]
         cur_g = cur["G"]
         lg_rpg = league_rpg(year)
@@ -452,12 +481,14 @@ def main():
         return smooth_value(cur_val, cur_g, prior, K_PF_GAMES)
 
     def is_starter_group(team, p_no, year, team_game_no):
+        """?? ??? ??? ?? ???/???? ????."""
         if team_game_no <= EARLY_BULLPEN_TEAM_GAMES:
             return pit_season_gs.get((p_no, year - 1), 0) >= PREV_SEASON_GS_THRESHOLD
         recent_sp_set = set(team_recent_starters[(team, year)])
         return p_no in recent_sp_set
 
     def pitcher_fatigue_score(p_no, date_str):
+        """D-1~D-5 ???? ????? ?? ?? ???? ????."""
         d0 = yyyymmdd_to_dt(date_str)
         score = 0
         for lag in range(1, 6):
@@ -467,6 +498,7 @@ def main():
         return score
 
     def select_core_bullpen(team, year, team_game_no, today_starter_p_no):
+        """?? ?? ??? ??? ?? ?? 4?? ???."""
         candidates = set()
         candidates.update(team_pitchers_by_year[(team, year - 1)])
         candidates.update(team_pitchers_by_year[(team, year)])
@@ -500,10 +532,12 @@ def main():
         return ranked[:4]
 
     def team_core_bullpen_fatigue(team, year, team_game_no, date_str, today_starter_p_no):
+        """?? ?? 4?? ???? ?? ? ?? ???? ????."""
         core4 = select_core_bullpen(team, year, team_game_no, today_starter_p_no)
         return sum(pitcher_fatigue_score(p_no, date_str) for p_no in core4)
 
     def count_platoon_advantage(batters, opp_sp_throw_code):
+        """?? ?????? ??? ??? ?? ?? ?? ??."""
         p_hand = pitcher_hand_from_p_throw(opp_sp_throw_code)
         cnt = 0
         for order in range(1, 10):
@@ -571,7 +605,8 @@ def main():
         todays_games.sort(key=lambda x: safe_int(x.get("s_no")))
         year = safe_int(date[:4])
 
-        # (1) Build today's features with D-1 state only
+        # (1) ?? ?? ??? ?? ???.
+        #     ?? ?? ?? ??? ???? ??? ??? D-1??? ????.
         for g in todays_games:
             s_no = safe_int(g.get("s_no"))
             if not s_no:
@@ -709,7 +744,7 @@ def main():
                     }
                 )
 
-        # (2) update team game counts / recent starters after today's games
+        # (2) ?? ?? ??? ? ?? ?? ?? ?? ??? ????.
         for g in todays_games:
             s_no = safe_int(g.get("s_no"))
             if not s_no:
@@ -729,7 +764,7 @@ def main():
                 if away_sp:
                     team_recent_starters[(away, year)].append(away_sp)
 
-        # (2b) update team-level score/win/stadium context after today's games
+        # (2b) ?? ?? ??? ??? ? ??, ?????, ?? ??, ???? ??? ????.
         for g in todays_games:
             home = safe_int(g.get("homeTeam"))
             away = safe_int(g.get("awayTeam"))
@@ -767,7 +802,7 @@ def main():
             league_game_runs[year]["R"] += (hs + aw)
             league_game_runs[year]["G"] += 1
 
-        # (3) update batter cumulative stats after today's games
+        # (3) ?? ?? ??? ??? ?? ????? ?? ??? ?? ?? ????.
         bat_rows = bat_by_date.get(date, [])
         bat_rows.sort(key=lambda x: safe_int(x.get("s_no")))
         for row in bat_rows:
@@ -801,7 +836,7 @@ def main():
 
             bat_recent[(p_no, y)].append({"AB": ab, "H": h, "BB": bb, "HP": hp, "SF": sf, "TB": tb})
 
-        # (4) update pitcher cumulative stats after today's games
+        # (4) ?? ?? ??? ??? ?? ????? ?OPS, BB/IP, ?? ??? ??? ????.
         pit_rows = pit_by_date.get(date, [])
         pit_rows.sort(key=lambda x: safe_int(x.get("s_no")))
         for row in pit_rows:
