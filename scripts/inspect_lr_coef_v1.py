@@ -1,7 +1,29 @@
 """
-backtest_v1_online_lr.py ? ?? ???? ??? LR ??? ???? ??????.
+로지스틱 회귀 계수(coefficient) 분석기
 
-? ????? ?? ????? `?? ??? ?? ???? ?????`? ???? ? ??? ??.
+backtest_v1_online_lr.py와 동일한 expanding-window 방식으로
+매 블록마다 LR 모델을 학습한 뒤, 각 피처의 회귀 계수를 기록합니다.
+
+[분석 목적]
+  - 각 피처가 모델 예측에 얼마나 기여하는지 확인합니다.
+  - 계수의 부호(+/-)가 블록마다 일관적인지 확인합니다.
+  - 크기가 큰 계수 = 예측에 영향력이 큰 피처
+
+[출력물 해석]
+  - mean_coef:     전체 블록의 평균 계수
+  - mean_abs_coef: 절대값 평균 (영향력 크기)
+  - std_coef:      계수의 표준편차 (안정성)
+  - pos_ratio:     양수(+) 비율 (방향 일관성,  1.0에 가까우면 항상 양수)
+
+[파이프라인 위치]
+  10단계 — backtest_v1_online_lr.py 기능의 해석/보조 분석입니다.
+
+[입력]
+  - ~/statiz/data/features_v1_paper.csv
+
+[출력]
+  - ~/statiz/data/backtest_lr_coef_v1.csv         — 블록별 계수 상세
+  - ~/statiz/data/backtest_lr_coef_summary_v1.csv  — 피처별 요약 통계
 """
 import os
 import numpy as np
@@ -16,19 +38,21 @@ FEATURES_CSV = os.path.join(DATA_DIR, "features_v1_paper.csv")
 OUT_COEF_CSV = os.path.join(DATA_DIR, "backtest_lr_coef_v1.csv")
 OUT_SUMMARY_CSV = os.path.join(DATA_DIR, "backtest_lr_coef_summary_v1.csv")
 
+# 분석 대상 피처 (v1 핵심 4피처)
 FEATURE_COLS = [
-    "diff_sum_ops_smooth",
-    "diff_sum_ops_recent5",
-    "diff_sp_oops",
-    "diff_bullpen_fatigue",
+    "diff_sum_ops_smooth",       # 타선 OPS_smooth 합 차이
+    "diff_sum_ops_recent5",      # 최근 5경기 OPS 합 차이
+    "diff_sp_oops",              # 선발투수 피안타 OPS 차이
+    "diff_bullpen_fatigue",      # 불펜 피로도 차이
 ]
 
-BLOCK_DAYS = 7
-TEST_YEAR = 2025
+BLOCK_DAYS = 7     # 블록 크기
+TEST_YEAR = 2025   # 평가 대상 연도
 
 
 def main():
-    """???? ???? ???? ?? ??? ???? ????."""
+    """블록별로 LR 계수를 추출하고 피처별 요약 통계를 산출합니다."""
+
     df = pd.read_csv(FEATURES_CSV)
     df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
 
@@ -67,7 +91,7 @@ def main():
         X_train = tr[FEATURE_COLS].values
         y_train = tr["y_home_win"].values
 
-        # ????? ??? ???/?? ??? ?? ?? ??? ?? ??? ??.
+        # 스케일링 후 LR 학습 (백테스트와 동일한 설정)
         model = Pipeline([
             ("scaler", StandardScaler()),
             ("lr", LogisticRegression(
@@ -79,6 +103,7 @@ def main():
         ])
         model.fit(X_train, y_train)
 
+        # 학습된 LR 모델에서 계수 추출
         lr = model.named_steps["lr"]
         for feat, coef in zip(FEATURE_COLS, lr.coef_[0]):
             coef_rows.append({
@@ -94,16 +119,17 @@ def main():
 
     coef_df = pd.DataFrame(coef_rows)
 
+    # 피처별 요약 통계 계산
     summary_df = (
         coef_df.groupby("feature")
         .agg(
-            mean_coef=("coef", "mean"),
-            mean_abs_coef=("coef", lambda s: float(np.mean(np.abs(s)))),
-            std_coef=("coef", "std"),
-            pos_ratio=("coef", lambda s: float(np.mean(s > 0))),
-            n_blocks=("coef", "size"),
+            mean_coef=("coef", "mean"),                                    # 평균 계수
+            mean_abs_coef=("coef", lambda s: float(np.mean(np.abs(s)))),   # 절대값 평균
+            std_coef=("coef", "std"),                                      # 표준편차
+            pos_ratio=("coef", lambda s: float(np.mean(s > 0))),           # 양수 비율
+            n_blocks=("coef", "size"),                                     # 블록 수
         )
-        .sort_values("mean_abs_coef", ascending=False)
+        .sort_values("mean_abs_coef", ascending=False)  # 영향력 큰 순으로 정렬
         .reset_index()
     )
 

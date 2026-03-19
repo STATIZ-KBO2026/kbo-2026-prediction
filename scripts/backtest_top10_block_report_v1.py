@@ -1,9 +1,25 @@
-﻿"""
-subset ?? ?? ?? N? ??? ??, ??? ?? ??? ??? ???? ?? ?? ??????.
+"""
+상위 N개 피처 조합 상세 블록 리포트
 
-? ????
-- ?? ???? ?? ?? ??? ?? ??? ??? ?? ???.
-- ??? ?? ??? ?? ??, ??? ??? ?? ??? ??? ???.
+feature_subset_search_v1.py가 찾은 상위 조합들에 대해
+블록별 상세 성능 지표 + 경기별 예측 결과를 생성합니다.
+
+[목적]
+  - subset 탐색은 전체 요약만 보여주는 반면, 이 스크립트는
+    각 조합의 블록별 성능 추이와 개별 경기 예측값을 확인할 수 있습니다.
+  - "어떤 시기에 어떤 조합이 잘/못 맞추는지" 분석하는 데 사용합니다.
+
+[파이프라인 위치]
+  9c단계 — feature_subset_search_v1.py 이후에 실행합니다.
+
+[입력]
+  - ~/statiz/data/features_v2_candidates.csv    — 피처 데이터
+  - ~/statiz/data/feature_subset_search_v1.csv  — 조합 순위 결과
+
+[출력]
+  - ~/statiz/data/top10_subset_summary_v1.csv      — 각 조합의 전체 요약 성능
+  - ~/statiz/data/top10_subset_block_metrics_v1.csv — 각 조합의 블록별 상세 성능
+  - ~/statiz/data/top10_subset_pred_v1.csv          — 각 조합의 경기별 예측 결과
 """
 import os
 import argparse
@@ -26,7 +42,7 @@ DEFAULT_OUT_PRED_CSV = os.path.join(DATA_DIR, "top10_subset_pred_v1.csv")
 
 
 def safe_auc(y_true, y_prob):
-    """? ??? ? ???? ??? AUC? ???? ???? ???? ????."""
+    """클래스가 하나뿐이면 NaN을 반환하는 안전한 AUC 계산."""
     uniq = set(pd.Series(y_true).astype(int).tolist())
     if len(uniq) < 2:
         return np.nan
@@ -34,7 +50,14 @@ def safe_auc(y_true, y_prob):
 
 
 def run_one_subset(df_all, feature_cols, block_days=7, test_year=2025):
-    """?? ?? ??? ??? ??/??/??? ??? ?? ???."""
+    """
+    한 개의 피처 조합에 대해 expanding-window 백테스트를 수행하고
+    전체 요약, 블록별 지표, 경기별 예측을 반환합니다.
+
+    Returns:
+        (overall_dict, block_rows_list, pred_df) 튜플
+        데이터 부족 시 (None, [], []) 반환
+    """
     need = list(feature_cols) + ["date", "s_no", "y_home_win"]
     missing = [c for c in need if c not in df_all.columns]
     if missing:
@@ -53,6 +76,7 @@ def run_one_subset(df_all, feature_cols, block_days=7, test_year=2025):
     if len(test_df) == 0:
         return None, [], []
 
+    # 예측 결과에 추가로 포함할 메타 컬럼
     extra_cols = [c for c in ["homeTeam", "awayTeam", "s_code", "homeScore", "awayScore"] if c in df.columns]
 
     first_test_date = test_df["date"].min().normalize()
@@ -77,7 +101,7 @@ def run_one_subset(df_all, feature_cols, block_days=7, test_year=2025):
             block_start = block_start + pd.Timedelta(days=block_days)
             continue
 
-        # ?? ???? ?? ???? ??? LR? ???? ???? ?? ??? ????.
+        # 학습 데이터에 승/패가 모두 있어야 LR 학습 가능
         if tr["y_home_win"].nunique() < 2:
             block_start = block_start + pd.Timedelta(days=block_days)
             continue
@@ -106,6 +130,7 @@ def run_one_subset(df_all, feature_cols, block_days=7, test_year=2025):
         prob_home = model.predict_proba(X_test)[:, 1]
         pred_home = (prob_home >= 0.5).astype(int)
 
+        # 블록별 성능 측정
         acc = accuracy_score(y_test, pred_home)
         ll = log_loss(y_test, prob_home, labels=[0, 1])
         br = brier_score_loss(y_test, prob_home)
@@ -125,6 +150,7 @@ def run_one_subset(df_all, feature_cols, block_days=7, test_year=2025):
             }
         )
 
+        # 경기별 예측 결과 저장
         tmp = te[["date", "s_no", "y_home_win"] + extra_cols].copy()
         tmp["block_idx"] = block_idx + 1
         tmp["block_start"] = block_start.strftime("%Y-%m-%d")
@@ -147,6 +173,7 @@ def run_one_subset(df_all, feature_cols, block_days=7, test_year=2025):
     p_all = np.array(p_all)
     yhat_all = np.array(yhat_all)
 
+    # 전체 기간 통합 성능
     auc_all = safe_auc(y_all, p_all)
     overall = {
         "n_rows": int(len(y_all)),
@@ -164,7 +191,7 @@ def run_one_subset(df_all, feature_cols, block_days=7, test_year=2025):
 
 
 def parse_args():
-    """?? ??? ???."""
+    """커맨드라인 인자를 파싱합니다."""
     p = argparse.ArgumentParser()
     p.add_argument("--features-csv", default=DEFAULT_FEATURES_CSV)
     p.add_argument("--subset-rank-csv", default=DEFAULT_SUBSET_RANK_CSV)
@@ -178,7 +205,7 @@ def parse_args():
 
 
 def main():
-    """?? subset?? ?? ??? ??/??/?? CSV? ????."""
+    """상위 subset들에 대해 상세 블록 리포트를 생성합니다."""
     args = parse_args()
 
     if not os.path.exists(args.features_csv):
@@ -189,6 +216,7 @@ def main():
     feat_df = pd.read_csv(args.features_csv)
     feat_df["date"] = pd.to_datetime(feat_df["date"].astype(str), format="%Y%m%d")
 
+    # 순위 파일에서 상위 N개 조합 읽기
     rank_df = pd.read_csv(args.subset_rank_csv)
     if "subset" not in rank_df.columns:
         raise ValueError("subset rank csv must include 'subset' column")
@@ -202,10 +230,11 @@ def main():
     block_all_rows = []
     pred_all = []
 
+    # 각 조합에 대해 상세 백테스트 실행
     for i, row in top_df.reset_index(drop=True).iterrows():
         subset_rank = i + 1
         subset = str(row["subset"]).strip()
-        cols = [c for c in subset.split("+") if c]
+        cols = [c for c in subset.split("+") if c]  # "col1+col2+col3" → ["col1","col2","col3"]
         k = len(cols)
         if k == 0:
             continue
@@ -219,6 +248,7 @@ def main():
         if overall is None:
             continue
 
+        # 요약 행 추가
         summary_rows.append(
             {
                 "subset_rank": subset_rank,
@@ -233,12 +263,14 @@ def main():
             }
         )
 
+        # 블록별 상세 지표에 조합 정보 추가
         for b in block_rows:
             b["subset_rank"] = subset_rank
             b["k"] = k
             b["subset"] = subset
             block_all_rows.append(b)
 
+        # 경기별 예측에 조합 정보 추가
         pred_df["subset_rank"] = subset_rank
         pred_df["k"] = k
         pred_df["subset"] = subset
@@ -255,6 +287,7 @@ def main():
     if not summary_rows:
         raise RuntimeError("no valid top subset results were produced")
 
+    # CSV 저장
     summary_out = pd.DataFrame(summary_rows).sort_values("subset_rank").reset_index(drop=True)
     block_out = pd.DataFrame(block_all_rows).sort_values(["subset_rank", "block_idx"]).reset_index(drop=True)
     pred_out = pd.concat(pred_all, axis=0).sort_values(["subset_rank", "date", "s_no"]).reset_index(drop=True)
