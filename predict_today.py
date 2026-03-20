@@ -1,10 +1,10 @@
 """
-KBO 경기 일일 예측 파이프라인
+KBO 경기 일일 예측 파이프라인 (v2-rank1 모델)
 
 하루의 전체 예측 흐름을 한 번에 처리합니다:
   1. gameSchedule API로 오늘 경기 목록 + 시작시간 조회
   2. gameLineup API로 각 경기의 선발 라인업 조회
-  3. 기존 누적 데이터 기반으로 v1 4피처 계산
+  3. 기존 누적 데이터 기반으로 v2-rank1 3피처 계산
   4. 학습된 LR 모델로 홈팀 승리확률 예측
   5. savePrediction API로 예측 제출
 
@@ -48,27 +48,33 @@ GAMES_CSV  = os.path.join(DATA_DIR, "game_index_played.csv")
 LINEUP_CSV = os.path.join(DATA_DIR, "lineup_long.csv")
 BAT_CSV    = os.path.join(DATA_DIR, "playerday_batter_long.csv")
 PIT_CSV    = os.path.join(DATA_DIR, "playerday_pitcher_long.csv")
-FEAT_CSV   = os.path.join(DATA_DIR, "features_v1_paper.csv")
+FEAT_CSV   = os.path.join(DATA_DIR, "features_v2_candidates.csv")
 LOG_DIR    = os.path.expanduser("~/statiz/logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
 # ══════════════════════════════════════════════
-# 피처 파라미터 (build_features_v1_paper.py와 동일)
+# 피처 파라미터 (build_features_v2_candidates.py와 동일)
 # ══════════════════════════════════════════════
 K_SMOOTH = 20
 MIN_PA_LASTSEASON = 60
-MIN_PA_RECENT = 10
-RECENT_GAMES = 5
 EARLY_BULLPEN_TEAM_GAMES = 20
 RECENT_TEAM_GAMES_FOR_SP = 7
 PREV_SEASON_GS_THRESHOLD = 5
 FALLBACK_PRIOR_OPS = 0.700
 
+# v2 추가 파라미터
+K_BBIP_IP = 30.0              # BB/IP 베이즈 평활 강도
+MIN_IP_LASTSEASON = 30.0      # 직전 시즌 BB/IP를 prior로 쓸 최소 이닝
+FALLBACK_PRIOR_BBIP = 0.35    # BB/IP 기본값
+PYTHAG_EXP = 1.83             # 피타고리안 승률 지수
+K_PYTHAG_GAMES = 20.0         # 피타고리안 승률 평활 강도
+MIN_PYTHAG_PRIOR_GAMES = 30   # 직전 시즌 prior 사용 최소 경기 수
+
+# v2-rank1 피처 3개: 불펜피로도 + 투수제구력(BB/IP) + 피타고리안승률
 FEATURE_COLS = [
-    "diff_sum_ops_smooth",
-    "diff_sum_ops_recent5",
-    "diff_sp_oops",
     "diff_bullpen_fatigue",
+    "diff_sp_bbip",
+    "diff_pythag_winpct",
 ]
 
 
@@ -277,6 +283,32 @@ def smooth(curr_val, curr_w, prior_val, K=K_SMOOTH):
     return (curr_w / (curr_w + K)) * curr_val + (K / (curr_w + K)) * prior_val
 
 
+def ip_to_outs(ip_val):
+    """KBO 이닝 표기(6.1→19아웃)를 아웃카운트로 변환"""
+    s = str(ip_val).strip()
+    if s == "" or s.lower() == "none":
+        return 0
+    if "." not in s:
+        return max(0, safe_int(s)) * 3
+    whole, frac = s.split(".", 1)
+    w = max(0, safe_int(whole))
+    f = frac[:1]
+    add = 1 if f == "1" else (2 if f == "2" else 0)
+    return w * 3 + add
+
+
+def pythag_winpct(rs, ra, exp=PYTHAG_EXP):
+    """피타고리안 기대 승률: 득점^exp / (득점^exp + 실점^exp)"""
+    rs = max(0.0, float(rs))
+    ra = max(0.0, float(ra))
+    if rs == 0 and ra == 0:
+        return 0.5
+    rs_e = rs ** exp
+    ra_e = ra ** exp
+    denom = rs_e + ra_e
+    return (rs_e / denom) if denom > 0 else 0.5
+
+
 def get_svhld(row):
     sv = 0
     for key in ("SV", "sv", "Save", "save", "S"):
@@ -293,15 +325,15 @@ def get_svhld(row):
 
 def build_cumulative_stats():
     """
-    역대 모든 데이터(playerday CSV)를 읽어 선수별, 팀별 누적 통계를 빌드합니다.
-    이 통계는 오늘 경기의 피처를 계산할 때 사용됩니다.
+    역대 모든 데이터(playerday CSV + game_index)를 읽어
+    선수별, 팀별 누적 통계를 빌드합니다.
+    v2-rank1 피처에 필요한 BB/IP, 피타고리안 승률 통계도 포함합니다.
     """
     print(f"\n[3/5] 📊 누적 통계 빌드 중...")
 
-    bat_cum = defaultdict(lambda: {"AB":0, "H":0, "BB":0, "HP":0, "SF":0, "TB":0})
-    pit_cum = defaultdict(lambda: {"AB":0, "H":0, "BB":0, "HP":0, "SF":0, "TB":0, "BF":0})
-    league_tot = defaultdict(lambda: {"AB":0, "H":0, "BB":0, "HP":0, "SF":0, "TB":0})
-    bat_recent = defaultdict(lambda: deque(maxlen=RECENT_GAMES))
+    # 투수 누적 (BB/IP 계산용으로 OUTS 추가)
+    pit_cum = defaultdict(lambda: {"AB":0, "H":0, "BB":0, "HP":0, "SF":0, "TB":0, "BF":0, "OUTS":0})
+    league_pit_tot = defaultdict(lambda: {"BB":0, "OUTS":0})  # 리그 평균 BB/IP 계산용
     pit_season_gs = defaultdict(int)
     pitcher_svhld_season = defaultdict(int)
     pitcher_np_by_date = defaultdict(int)
@@ -309,37 +341,8 @@ def build_cumulative_stats():
     team_recent_starters = defaultdict(lambda: deque(maxlen=RECENT_TEAM_GAMES_FOR_SP))
     team_pitchers_by_year = defaultdict(set)
 
-    # 타자 데이터 로드
-    bat_count = 0
-    with open(BAT_CSV, "r", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            p_no = safe_int(row.get("p_no"))
-            y = safe_int(row.get("year"))
-            if not p_no or not y:
-                continue
-            AB = safe_int(row.get("AB"))
-            H  = safe_int(row.get("H"))
-            BB = safe_int(row.get("BB"))
-            HP = safe_int(row.get("HP"))
-            SF = safe_int(row.get("SF"))
-            TB = safe_int(row.get("TB"))
-
-            bat_cum[(p_no, y)]["AB"] += AB
-            bat_cum[(p_no, y)]["H"]  += H
-            bat_cum[(p_no, y)]["BB"] += BB
-            bat_cum[(p_no, y)]["HP"] += HP
-            bat_cum[(p_no, y)]["SF"] += SF
-            bat_cum[(p_no, y)]["TB"] += TB
-
-            league_tot[y]["AB"] += AB
-            league_tot[y]["H"]  += H
-            league_tot[y]["BB"] += BB
-            league_tot[y]["HP"] += HP
-            league_tot[y]["SF"] += SF
-            league_tot[y]["TB"] += TB
-
-            bat_recent[(p_no, y)].append({"AB":AB, "H":H, "BB":BB, "HP":HP, "SF":SF, "TB":TB})
-            bat_count += 1
+    # 팀 레벨 득실점 (피타고리안 승률용)
+    team_runs = defaultdict(lambda: {"RS":0, "RA":0, "G":0})
 
     # 투수 데이터 로드
     pit_count = 0
@@ -362,6 +365,7 @@ def build_cumulative_stats():
             GS = safe_int(row.get("GS"))
             NP = safe_int(row.get("NP"))
             SVHLD = get_svhld(row)
+            outs = ip_to_outs(row.get("IP"))
 
             BF = TBF if TBF > 0 else (AB + BB + HP + SF)
 
@@ -372,6 +376,10 @@ def build_cumulative_stats():
             pit_cum[(p_no, y)]["SF"] += SF
             pit_cum[(p_no, y)]["TB"] += TB
             pit_cum[(p_no, y)]["BF"] += BF
+            pit_cum[(p_no, y)]["OUTS"] += outs
+
+            league_pit_tot[y]["BB"] += BB
+            league_pit_tot[y]["OUTS"] += outs
 
             pit_season_gs[(p_no, y)] += GS
             pitcher_svhld_season[(p_no, y)] += SVHLD
@@ -381,97 +389,105 @@ def build_cumulative_stats():
                 team_pitchers_by_year[(t_code, y)].add(p_no)
             pit_count += 1
 
-    # 경기 인덱스에서 팀 경기 수 집계
+    # 경기 인덱스에서 팀 경기 수 + 득실점 집계
     with open(GAMES_CSV, "r", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             d = row.get("date", "")
             home = safe_int(row.get("homeTeam"))
             away = safe_int(row.get("awayTeam"))
+            hs = safe_int(row.get("homeScore"))
+            aws = safe_int(row.get("awayScore"))
             y = safe_int(d[:4]) if len(d) >= 4 else 0
-            if y and home:
+            if not y:
+                continue
+            if home:
                 team_game_cnt[(home, y)] += 1
-            if y and away:
+                team_runs[(home, y)]["RS"] += hs
+                team_runs[(home, y)]["RA"] += aws
+                team_runs[(home, y)]["G"] += 1
+            if away:
                 team_game_cnt[(away, y)] += 1
+                team_runs[(away, y)]["RS"] += aws
+                team_runs[(away, y)]["RA"] += hs
+                team_runs[(away, y)]["G"] += 1
 
-    print(f"  ✅ 타자 기록 {bat_count:,}건, 투수 기록 {pit_count:,}건 로드 완료")
+    print(f"  ✅ 투수 기록 {pit_count:,}건 로드, 팀 득실점 집계 완료")
 
     return {
-        "bat_cum": bat_cum,
         "pit_cum": pit_cum,
-        "league_tot": league_tot,
-        "bat_recent": bat_recent,
+        "league_pit_tot": league_pit_tot,
         "pit_season_gs": pit_season_gs,
         "pitcher_svhld_season": pitcher_svhld_season,
         "pitcher_np_by_date": pitcher_np_by_date,
         "team_game_cnt": team_game_cnt,
         "team_pitchers_by_year": team_pitchers_by_year,
         "team_recent_starters": team_recent_starters,
+        "team_runs": team_runs,
     }
 
 
 def compute_features(games, lineups, stats, target_year):
     """
-    오늘 경기들의 v1 4피처를 계산합니다.
+    오늘 경기들의 v2-rank1 3피처를 계산합니다.
 
     Returns:
-        {s_no: {"diff_sum_ops_smooth": ..., "diff_sum_ops_recent5": ...,
-                "diff_sp_oops": ..., "diff_bullpen_fatigue": ...}, ...}
+        {s_no: {"diff_bullpen_fatigue": ...,
+                "diff_sp_bbip": ...,
+                "diff_pythag_winpct": ...}, ...}
     """
-    bat_cum = stats["bat_cum"]
     pit_cum = stats["pit_cum"]
-    league_tot = stats["league_tot"]
-    bat_recent = stats["bat_recent"]
+    league_pit_tot = stats["league_pit_tot"]
     pit_season_gs = stats["pit_season_gs"]
     pitcher_svhld_season = stats["pitcher_svhld_season"]
     pitcher_np_by_date = stats["pitcher_np_by_date"]
     team_game_cnt = stats["team_game_cnt"]
     team_pitchers_by_year = stats["team_pitchers_by_year"]
     team_recent_starters = stats["team_recent_starters"]
+    team_runs = stats["team_runs"]
 
     year = target_year
 
-    def league_ops(y):
-        tot = league_tot.get(y)
-        if not tot:
-            return FALLBACK_PRIOR_OPS
-        ops, _ = calc_ops(tot["H"], tot["BB"], tot["HP"], tot["AB"], tot["SF"], tot["TB"])
-        return ops if ops > 0 else FALLBACK_PRIOR_OPS
+    # ── BB/IP 관련 함수 ──
+    def league_bbip(y):
+        """해당 연도 리그 평균 BB/IP"""
+        tot = league_pit_tot.get(y)
+        if not tot or tot["OUTS"] <= 0:
+            return FALLBACK_PRIOR_BBIP
+        ip = tot["OUTS"] / 3.0
+        return (tot["BB"] / ip) if ip > 0 else FALLBACK_PRIOR_BBIP
 
-    def batter_ops_smooth(p_no, y):
-        cur = bat_cum[(p_no, y)]
-        cur_ops, cur_pa = calc_ops(cur["H"], cur["BB"], cur["HP"], cur["AB"], cur["SF"], cur["TB"])
-        prev = bat_cum.get((p_no, y - 1))
-        if prev:
-            prev_ops, prev_pa = calc_ops(prev["H"], prev["BB"], prev["HP"], prev["AB"], prev["SF"], prev["TB"])
-        else:
-            prev_ops, prev_pa = 0.0, 0
-        prior = prev_ops if prev_pa >= MIN_PA_LASTSEASON else league_ops(y - 1)
-        return smooth(cur_ops, cur_pa, prior)
-
-    def batter_ops_recent(p_no, y, fallback):
-        dq = bat_recent[(p_no, y)]
-        if not dq:
-            return fallback
-        AB = H = BB = HP = SF = TB = 0
-        for it in dq:
-            AB += it["AB"]; H += it["H"]; BB += it["BB"]
-            HP += it["HP"]; SF += it["SF"]; TB += it["TB"]
-        ops, pa = calc_ops(H, BB, HP, AB, SF, TB)
-        return ops if pa >= MIN_PA_RECENT else fallback
-
-    def pitcher_oops_smooth(p_no, y):
+    def pitcher_bbip_smooth(p_no, y):
+        """투수 BB/IP(이닝당 볼넷)에 베이즈 평활 적용"""
         cur = pit_cum[(p_no, y)]
-        cur_ops, _ = calc_ops(cur["H"], cur["BB"], cur["HP"], cur["AB"], cur["SF"], cur["TB"])
-        cur_bf = cur["BF"]
+        cur_ip = cur["OUTS"] / 3.0 if cur["OUTS"] > 0 else 0.0
+        cur_val = (cur["BB"] / cur_ip) if cur_ip > 0 else 0.0
+
         prev = pit_cum.get((p_no, y - 1))
         if prev:
-            prev_ops, _ = calc_ops(prev["H"], prev["BB"], prev["HP"], prev["AB"], prev["SF"], prev["TB"])
-            prev_bf = prev["BF"]
+            prev_ip = prev["OUTS"] / 3.0 if prev["OUTS"] > 0 else 0.0
+            prev_val = (prev["BB"] / prev_ip) if prev_ip > 0 else 0.0
         else:
-            prev_ops, prev_bf = 0.0, 0
-        prior = prev_ops if prev_bf >= MIN_PA_LASTSEASON else league_ops(y - 1)
-        return smooth(cur_ops, cur_bf, prior)
+            prev_ip, prev_val = 0.0, 0.0
 
+        prior = prev_val if prev_ip >= MIN_IP_LASTSEASON else league_bbip(y - 1)
+        return smooth(cur_val, cur_ip, prior, K_BBIP_IP)
+
+    # ── 피타고리안 승률 함수 ──
+    def team_pythag_smooth(team, y):
+        """팀 피타고리안 기대 승률에 베이즈 평활 적용"""
+        cur = team_runs[(team, y)]
+        cur_val = pythag_winpct(cur["RS"], cur["RA"])
+        cur_w = cur["G"]
+
+        prev = team_runs.get((team, y - 1))
+        if prev and prev["G"] >= MIN_PYTHAG_PRIOR_GAMES:
+            prior = pythag_winpct(prev["RS"], prev["RA"])
+        else:
+            prior = 0.5
+
+        return smooth(cur_val, cur_w, prior, K_PYTHAG_GAMES)
+
+    # ── 불펜 피로도 함수 ──
     def is_starter_group(team, p_no, y, team_game_no):
         if team_game_no <= EARLY_BULLPEN_TEAM_GAMES:
             return pit_season_gs.get((p_no, y - 1), 0) >= PREV_SEASON_GS_THRESHOLD
@@ -501,6 +517,7 @@ def compute_features(games, lineups, stats, target_year):
             ranked = sorted(pool, key=lambda p: (pitcher_svhld_season.get((p, y), 0), pitcher_svhld_season.get((p, y-1), 0), p), reverse=True)
         return ranked[:4]
 
+    # ── 피처 계산 ──
     today_str = datetime.now().strftime("%Y%m%d")
     features = {}
 
@@ -515,39 +532,28 @@ def compute_features(games, lineups, stats, target_year):
         home_game_no = team_game_cnt.get((home, year), 0) + 1
         away_game_no = team_game_cnt.get((away, year), 0) + 1
 
-        def lineup_sums(side):
-            batters = lu[side]["batters"]
-            sum_s = sum_r = 0.0
-            for order in range(1, 10):
-                p_no = batters.get(order)
-                if not p_no:
-                    fb = league_ops(year - 1)
-                    sum_s += fb; sum_r += fb
-                    continue
-                ops_s = batter_ops_smooth(p_no, year)
-                ops_r = batter_ops_recent(p_no, year, ops_s)
-                sum_s += ops_s; sum_r += ops_r
-            return sum_s, sum_r
-
-        home_s, home_r = lineup_sums("home")
-        away_s, away_r = lineup_sums("away")
-
+        # 선발투수
         home_sp = lu["home"]["P"]
         away_sp = lu["away"]["P"]
 
-        home_sp_oops = pitcher_oops_smooth(home_sp, year) if home_sp else league_ops(year - 1)
-        away_sp_oops = pitcher_oops_smooth(away_sp, year) if away_sp else league_ops(year - 1)
-
+        # (1) 불펜 피로도
         core4_home = select_core_bullpen(home, year, home_game_no, home_sp)
         core4_away = select_core_bullpen(away, year, away_game_no, away_sp)
         home_fat = sum(pitcher_fatigue(p, today_str) for p in core4_home)
         away_fat = sum(pitcher_fatigue(p, today_str) for p in core4_away)
 
+        # (2) 선발투수 BB/IP (제구력)
+        home_sp_bbip = pitcher_bbip_smooth(home_sp, year) if home_sp else league_bbip(year - 1)
+        away_sp_bbip = pitcher_bbip_smooth(away_sp, year) if away_sp else league_bbip(year - 1)
+
+        # (3) 피타고리안 기대 승률
+        home_pyth = team_pythag_smooth(home, year) if home else 0.5
+        away_pyth = team_pythag_smooth(away, year) if away else 0.5
+
         features[s_no] = {
-            "diff_sum_ops_smooth": round(home_s - away_s, 6),
-            "diff_sum_ops_recent5": round(home_r - away_r, 6),
-            "diff_sp_oops": round(home_sp_oops - away_sp_oops, 6),
             "diff_bullpen_fatigue": home_fat - away_fat,
+            "diff_sp_bbip": round(home_sp_bbip - away_sp_bbip, 6),
+            "diff_pythag_winpct": round(home_pyth - away_pyth, 6),
         }
 
     return features
@@ -557,8 +563,8 @@ def compute_features(games, lineups, stats, target_year):
 # 4단계: 모델 예측
 # ══════════════════════════════════════════════
 def train_model():
-    """기존 features_v1_paper.csv의 전체 데이터로 LR 모델을 학습합니다."""
-    print(f"\n[4/5] 🤖 모델 학습 중...")
+    """features_v2_candidates.csv의 전체 데이터로 v2-rank1 LR 모델을 학습합니다."""
+    print(f"\n[4/5] 🤖 v2-rank1 모델 학습 중...")
 
     import pandas as pd
     df = pd.read_csv(FEAT_CSV)
@@ -685,7 +691,8 @@ def main():
     target_year = target.year
 
     print("=" * 60)
-    print(f"  KBO 일일 예측 파이프라인")
+    print(f"  KBO 일일 예측 파이프라인 (v2-rank1)")
+    print(f"  피처: 불펜피로도 + 투수BB/IP + 피타고리안승률")
     print(f"  대상 날짜: {target.isoformat()}")
     print(f"  모드: {'DRY RUN' if args.dry_run else '실제 제출'}")
     print("=" * 60)
