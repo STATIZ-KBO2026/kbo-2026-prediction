@@ -78,6 +78,66 @@ flowchart LR
 
 ---
 
+## 🤖 실시간 예측 시스템
+
+경기 당일, **자동으로 승부를 예측하고 제출**하는 시스템입니다.
+
+### 어떻게 동작하나요?
+
+```mermaid
+flowchart LR
+    A["📅 오늘 경기 조회\n몇 시에 어떤 팀이\n경기하는지 확인"] --> B["📋 라인업 수신\n양 팀의 출전 선수\n9명 + 선발투수 확인"]
+    B --> C["📊 전력 분석\n과거 성적 기반\n양 팀 전력 수치화"]
+    C --> D["🤖 AI 예측\n홈팀 승리확률\n계산"]
+    D --> E["📤 결과 제출\nSTATIZ 서버에\n예측값 전송"]
+
+    style A fill:#1a1a2e,stroke:#e94560,color:#fff
+    style B fill:#16213e,stroke:#0f3460,color:#fff
+    style C fill:#0f3460,stroke:#53a8b6,color:#fff
+    style D fill:#1b4332,stroke:#52b788,color:#fff
+    style E fill:#3d0066,stroke:#9d4edd,color:#fff
+```
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+#### ⏰ 타이밍
+- **경기 ~1시간 전** — 라인업 발표
+- **예측 실행** — 라인업 확인 후 즉시
+- **제출 마감** — 경기 시작 15분 전
+
+현재 매일 12:05(KST) cron 자동 실행 설정
+
+</td>
+<td width="50%" valign="top">
+
+#### 📁 관련 파일
+| 파일 | 역할 |
+|------|------|
+| `predict_today.py` | 전체 파이프라인 (원클릭) |
+| `schedule_predict.sh` | cron 자동 실행 래퍼 |
+| `logs/predict_*.csv` | 제출 결과 기록 |
+
+</td>
+</tr>
+</table>
+
+#### 사용법
+
+```bash
+# 오늘 경기 예측 + 제출
+python3 predict_today.py
+
+# 미리보기만 (제출하지 않음)
+python3 predict_today.py --dry-run
+
+# 특정 날짜 지정
+python3 predict_today.py --date 20260321
+```
+
+---
+
 ## 📂 스크립트 맵
 
 각 단계에서 어떤 스크립트를 실행하고, 어떤 파일이 생성되는지 정리한 표입니다.
@@ -164,24 +224,26 @@ flowchart LR
 ## 🚀 Quick Start
 
 ```bash
-# EC2 접속 후 가상환경 활성화
-cd ~/statiz && source .venv/bin/activate
+# EC2 접속
+cd ~/statiz
 
-# 1. 데이터 수집 (이미 완료된 경우 생략)
-python download_schedule.py
-python build_game_index.py
-python download_game_details.py
-python download_playerday.py
+# 데이터 수집 (이미 완료된 경우 생략)
+python3 scripts/download_schedule.py
+python3 scripts/build_game_index.py
+python3 scripts/download_game_details.py
+python3 scripts/download_playerday.py
 
-# 2. 데이터 가공
-python build_lineup_table.py
-python build_player_year_index.py
-python build_playerday_tables_v2.py
+# 데이터 가공
+python3 scripts/build_lineup_table.py
+python3 scripts/build_player_year_index.py
+python3 scripts/build_playerday_tables_v2.py
 
-# 3. 피처 생성 & 백테스트
-python build_features_v2_candidates.py
-python feature_subset_search_v1.py
-python backtest_top10_block_report_v1.py
+# 피처 생성 & 백테스트
+python3 scripts/build_features_v2_candidates.py
+python3 scripts/feature_subset_search_v1.py
+
+# 🔥 오늘 경기 예측 + 제출
+python3 predict_today.py
 ```
 
 ---
@@ -190,26 +252,31 @@ python backtest_top10_block_report_v1.py
 
 ```
 kbo-2026-prediction/
-├── 📄 README.md                           ← 이 문서
+├── 📄 README.md
 ├── 📄 LICENSE
 ├── 📄 .gitignore
-└── 📂 scripts/
-    ├── 🌐 download_schedule.py            1단계  일정 수집
-    ├── 📋 build_game_index.py             2단계  경기 인덱스
-    ├── 🌐 download_game_details.py        3단계  상세 수집
-    ├── 🌐 download_playerday.py           4단계  playerDay 수집
-    ├── 👥 build_lineup_table.py           5단계  라인업 테이블
-    ├── 🆔 build_player_year_index.py      6단계  선수 인덱스
-    ├── ⚙️ build_playerday_tables_v2.py     7단계  타자/투수 테이블
-    ├── 🔧 build_features_v1_paper.py      8단계  v1 피처
-    ├── 🔧 build_features_v2_candidates.py 8단계  v2 피처
-    ├── 📉 backtest_v1_online_lr.py        9단계  백테스트
-    ├── 🔍 feature_subset_search_v1.py     9단계  subset 탐색
-    ├── 📊 backtest_top10_block_report_v1.py 10단계 상위 리포트
-    └── 🔬 inspect_lr_coef_v1.py           10단계 계수 해석
+│
+├── 🤖 predict_today.py              ← 일일 예측 파이프라인 (원클릭)
+├── ⏰ schedule_predict.sh            ← cron 자동 실행 래퍼
+│
+├── 📂 scripts/                       ← 데이터 수집·가공·실험 스크립트
+│   ├── 🌐 download_schedule.py            1단계  일정 수집
+│   ├── 📋 build_game_index.py             2단계  경기 인덱스
+│   ├── 🌐 download_game_details.py        3단계  상세 수집
+│   ├── 🌐 download_playerday.py           4단계  playerDay 수집
+│   ├── 👥 build_lineup_table.py           5단계  라인업 테이블
+│   ├── 🆔 build_player_year_index.py      6단계  선수 인덱스
+│   ├── ⚙️ build_playerday_tables_v2.py     7단계  타자/투수 테이블
+│   ├── 🔧 build_features_v1_paper.py      8단계  v1 피처
+│   ├── 🔧 build_features_v2_candidates.py 8단계  v2 피처
+│   ├── 📉 backtest_v1_online_lr.py        9단계  백테스트
+│   ├── 🔍 feature_subset_search_v1.py     9단계  subset 탐색
+│   ├── 📊 backtest_top10_block_report_v1.py 10단계 상위 리포트
+│   └── 🔬 inspect_lr_coef_v1.py           10단계 계수 해석
+│
+├── 📂 data/                          ← 데이터 저장소 (git 제외)
+└── 📂 logs/                          ← 예측 제출 로그 (git 제외)
 ```
-
-> 💡 **참고**: EC2 `~/statiz/`에서는 스크립트가 루트에 직접 있고, GitHub repo에서는 `scripts/` 아래에 정리되어 있습니다.
 
 ---
 
