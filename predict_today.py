@@ -34,10 +34,29 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 
 # ══════════════════════════════════════════════
-# API 설정
+# API 설정 (.env 파일에서 로드)
 # ══════════════════════════════════════════════
-API_KEY = "db136fe0e5d00e3135991c1d484b7e9c"
-SECRET  = "49bbde2c22f1e1e3571966f004c8e96c5f8784008cc0887bcbee348e21ee6518".encode("utf-8")
+def _load_env(path=None):
+    """별도 라이브러리 없이 .env 파일을 읽어 os.environ에 설정합니다."""
+    if path is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
+
+_load_env()
+
+API_KEY = os.environ.get("STATIZ_API_KEY", "")
+SECRET  = os.environ.get("STATIZ_SECRET", "").encode("utf-8")
+if not API_KEY or not SECRET:
+    sys.exit("❌ STATIZ_API_KEY / STATIZ_SECRET 환경변수가 설정되지 않았습니다.\n"
+             "   .env 파일을 만들거나 export로 설정해주세요.")
 BASE    = "https://api.statiz.co.kr/baseballApi"
 
 # ══════════════════════════════════════════════
