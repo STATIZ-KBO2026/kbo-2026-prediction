@@ -664,14 +664,32 @@ def submit_predictions(predictions: dict, dry_run=False):
     return results
 
 
+def load_submitted(target_date):
+    """
+    오늘 이미 제출 성공한 경기의 s_no 세트를 반환합니다.
+    하루에 여러 번 실행해도 이미 성공한 경기는 다시 제출하지 않습니다.
+    """
+    log_file = os.path.join(LOG_DIR, f"predict_{target_date.strftime('%Y%m%d')}.csv")
+    submitted = set()
+    if not os.path.exists(log_file):
+        return submitted
+    with open(log_file, "r", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            if row.get("status") == "OK":
+                submitted.add(int(row["s_no"]))
+    return submitted
+
+
 def save_log(target_date, predictions, results):
-    """제출 결과를 로그 파일로 저장합니다."""
+    """제출 결과를 로그 파일에 추가(append)합니다."""
     log_file = os.path.join(LOG_DIR, f"predict_{target_date.strftime('%Y%m%d')}.csv")
     fieldnames = ["datetime", "date", "s_no", "percent", "status", "msg"]
 
-    with open(log_file, "w", newline="", encoding="utf-8") as f:
+    file_exists = os.path.exists(log_file)
+    with open(log_file, "a", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
+        if not file_exists:
+            w.writeheader()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for r in results:
             w.writerow({
@@ -716,21 +734,36 @@ def main():
     print(f"  모드: {'DRY RUN' if args.dry_run else '실제 제출'}")
     print("=" * 60)
 
+    # 이미 제출 성공한 경기 확인
+    already_submitted = load_submitted(target)
+    if already_submitted:
+        print(f"\nℹ️  이미 제출된 경기: {sorted(already_submitted)}")
+
     # 1단계: 경기 일정 조회
     games = fetch_schedule(target)
     if not games:
         print("\n⚠ 오늘 경기가 없습니다.")
         return
 
-    # 2단계: 라인업 조회
-    lineups = fetch_all_lineups(games)
+    # 이미 제출한 경기 제외
+    remaining_games = [g for g in games if g["s_no"] not in already_submitted]
+    if not remaining_games:
+        print(f"\n✅ 모든 {len(games)}경기 이미 제출 완료!")
+        return
+
+    skipped = len(games) - len(remaining_games)
+    if skipped > 0:
+        print(f"\n⏭️  {skipped}경기 이미 제출됨 → 나머지 {len(remaining_games)}경기만 처리")
+
+    # 2단계: 라인업 조회 (남은 경기만)
+    lineups = fetch_all_lineups(remaining_games)
     if not lineups:
         print("\n⚠ 라인업을 조회할 수 없습니다. (아직 발표 전일 수 있음)")
         return
 
     # 3단계: 누적 통계 빌드 + 피처 계산
     stats = build_cumulative_stats()
-    features = compute_features(games, lineups, stats, target_year)
+    features = compute_features(remaining_games, lineups, stats, target_year)
 
     if not features:
         print("\n⚠ 피처를 계산할 수 없습니다.")
@@ -747,10 +780,13 @@ def main():
     # 5단계: 제출
     results = submit_predictions(predictions, dry_run=args.dry_run)
 
-    # 로그 저장
+    # 로그 저장 (append)
     save_log(target, predictions, results)
 
-    print("\n✅ 파이프라인 완료!")
+    # 결과 요약
+    ok_cnt = sum(1 for r in results if r["status"] == "OK")
+    total_submitted = len(already_submitted) + ok_cnt
+    print(f"\n✅ 파이프라인 완료! (오늘 제출: {total_submitted}/{len(games)}경기)")
 
 
 if __name__ == "__main__":
