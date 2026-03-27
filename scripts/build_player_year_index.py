@@ -4,6 +4,22 @@ from collections import defaultdict
 IN_CSV  = os.path.expanduser("~/statiz/data/lineup_long.csv")
 OUT_CSV = os.path.expanduser("~/statiz/data/player_year_index.csv")
 
+def safe_int(x, default=0):
+    try:
+        if x is None:
+            return default
+        s = str(x).strip()
+        if s == "" or s.lower() == "none":
+            return default
+        return int(float(s))
+    except Exception:
+        return default
+
+def is_pitcher_row(batting_order, position):
+    bo = str(batting_order or "").strip().upper()
+    pos = safe_int(position, 0)
+    return bo == "P" or pos == 1
+
 def main():
     agg = {}  # (p_no, year) -> stats
 
@@ -13,6 +29,7 @@ def main():
             p_no = row.get("p_no")
             date = row.get("date")  # YYYYMMDD
             bo   = row.get("battingOrder")  # "1"~"9" or "P"
+            pos  = row.get("position")
 
             if not p_no or not date or len(date) < 4:
                 continue
@@ -38,7 +55,7 @@ def main():
             if date > s["last_date"]:
                 s["last_date"] = date
 
-            if bo == "P":
+            if is_pitcher_row(bo, pos):
                 s["has_pitcher"] = 1
             else:
                 s["has_batter"] = 1

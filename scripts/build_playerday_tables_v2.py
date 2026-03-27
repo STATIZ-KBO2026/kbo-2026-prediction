@@ -53,10 +53,38 @@ def iter_records(data: dict):
         "result_cd":100, ...
       }
     """
+    # possible v4 shape: {"s_no":[{...}, ...], ...}
+    s_block = data.get("s_no")
+    if isinstance(s_block, list):
+        for item in s_block:
+            if not isinstance(item, dict):
+                continue
+            s_no = item.get("s_no")
+            if s_no is None:
+                continue
+            try:
+                yield int(s_no), item
+            except Exception:
+                pass
+        return
+    if isinstance(s_block, dict):
+        # {"s_no":{"20250001":{...}, ...}} or {"s_no":{"s_no":..., ...}}
+        if "s_no" in s_block:
+            try:
+                yield int(s_block.get("s_no")), s_block
+                return
+            except Exception:
+                pass
+        for k, v in s_block.items():
+            if isinstance(k, str) and k.isdigit() and isinstance(v, dict):
+                yield int(k), v
+        return
+
+    # legacy shape: {"20250003": {...}, "20250008": {...}, ...}
     for k, v in data.items():
         if k in ("result_cd","result_msg","update_time"):
             continue
-        if not (isinstance(k, str) and k.isdigit() and len(k) == 8):
+        if not (isinstance(k, str) and k.isdigit() and 6 <= len(k) <= 10):
             continue
 
         # 보통 v는 dict(한 경기 기록)인데 혹시 list면 확장 처리

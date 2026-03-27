@@ -67,8 +67,9 @@ def fetch_one_day(d: date, sleep_sec=0.2, retries=3):
     return False, repr(last_err)
 
 def main():
-    start = date(2022, 1, 1)
-    end   = date(2025, 12, 31)
+    # 대회 공지 기준: 2023년부터 사용
+    start = date(2023, 1, 1)
+    end   = date.today()
 
     ok_days = 0
     fail_days = 0

@@ -55,7 +55,7 @@ def out_path(p_no, year):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", type=int, default=20, help="처음엔 20으로 테스트 추천")
+    ap.add_argument("--limit", type=int, default=0, help="0이면 전체, 양수면 앞에서 N개만 수집")
     args = ap.parse_args()
 
     pairs = load_pairs(limit=args.limit if args.limit > 0 else None)

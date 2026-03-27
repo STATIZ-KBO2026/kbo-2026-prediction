@@ -1,11 +1,55 @@
 import os, json, glob, csv
 
 RAW_DIR = os.path.expanduser("~/statiz/data/raw_schedule")
-OUT_CSV = os.path.expanduser("~/statiz/data/game_index.csv")
+OUT_ALL_CSV = os.path.expanduser("~/statiz/data/game_index.csv")
+OUT_PLAYED_CSV = os.path.expanduser("~/statiz/data/game_index_played.csv")
+MIN_DATE = "20230101"  # 대회 규칙: 2023년 데이터부터 사용
+
+def safe_int(x):
+    try:
+        if x is None:
+            return None
+        s = str(x).strip()
+        if s == "" or s.lower() == "none":
+            return None
+        return int(float(s))
+    except Exception:
+        return None
+
+def is_played_row(row):
+    # 결과 점수가 확정된 경기만 played로 간주
+    hs = safe_int(row.get("homeScore"))
+    aw = safe_int(row.get("awayScore"))
+    return hs is not None and aw is not None
+
+def write_csv(path, rows, fieldnames):
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+
+def extract_schedule_games(data):
+    # v4 spec shape: {"date": [ ...games... ], ...}
+    date_block = data.get("date")
+    if isinstance(date_block, list):
+        return date_block
+    if isinstance(date_block, dict):
+        out = []
+        for v in date_block.values():
+            if isinstance(v, list):
+                out.extend(v)
+        if out:
+            return out
+
+    # legacy shape: {"MMDD": [ ...games... ], ...}
+    for k, v in data.items():
+        if isinstance(k, str) and k.isdigit() and len(k) == 4 and isinstance(v, list):
+            return v
+    return []
 
 def main():
     files = sorted(glob.glob(os.path.join(RAW_DIR, "*.json")))
-    os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
+    os.makedirs(os.path.dirname(OUT_ALL_CSV), exist_ok=True)
 
     rows = []
     for fp in files:
@@ -17,22 +61,13 @@ def main():
         if data.get("result_cd") != 100:
             continue
 
-        # 날짜 키는 "0504" 같은 형태로 들어있음
-        date_key = None
-        for k in data.keys():
-            if k.isdigit() and len(k) == 4:  # MMDD
-                date_key = k
-                break
-        if not date_key:
-            continue
-
-        games = data.get(date_key, [])
+        games = extract_schedule_games(data)
         for g in games:
-            # 필요한 것만 최소로 뽑음 (나중에 늘리면 됨)
+            # 예측에 유용한 경기 컨텍스트(날씨/환경 포함)를 함께 저장
             rows.append({
                 "date": ymd,
                 "s_no": g.get("s_no"),
-                "state": g.get("state"),
+                "state": g.get("s_state", g.get("state")),
                 "leagueType": g.get("leagueType"),
                 "s_code": g.get("s_code"),
                 "awayTeam": g.get("awayTeam"),
@@ -45,23 +80,32 @@ def main():
                 "homeScore": g.get("homeScore"),
                 "hm": g.get("hm"),
                 "gameDate": g.get("gameDate"),
+                "weather": g.get("weather"),
+                "temperature": g.get("temperature"),
+                "humidity": g.get("humidity"),
+                "windDirection": g.get("windDirection"),
+                "windSpeed": g.get("windSpeed"),
+                "rainprobability": g.get("rainprobability"),
             })
 
     # s_no 없는 행 제거 + date/s_no 기준 정렬
-    rows = [r for r in rows if r["s_no"] is not None]
+    rows = [r for r in rows if r["s_no"] is not None and str(r["date"]) >= MIN_DATE]
     rows.sort(key=lambda r: (r["date"], r["s_no"]))
 
     fieldnames = list(rows[0].keys()) if rows else [
         "date","s_no","state","leagueType","s_code","awayTeam","homeTeam",
-        "awaySP","homeSP","awaySPName","homeSPName","awayScore","homeScore","hm","gameDate"
+        "awaySP","homeSP","awaySPName","homeSPName","awayScore","homeScore","hm","gameDate",
+        "weather","temperature","humidity","windDirection","windSpeed","rainprobability"
     ]
 
-    with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        w.writerows(rows)
+    played_rows = [r for r in rows if is_played_row(r)]
 
-    print("DONE", "games=", len(rows), "out=", OUT_CSV)
+    write_csv(OUT_ALL_CSV, rows, fieldnames)
+    write_csv(OUT_PLAYED_CSV, played_rows, fieldnames)
+
+    print("DONE")
+    print("all_games=", len(rows), "out=", OUT_ALL_CSV)
+    print("played_games=", len(played_rows), "out=", OUT_PLAYED_CSV)
 
 if __name__ == "__main__":
     main()

@@ -41,15 +41,19 @@ flowchart LR
 
 ## ✅ 현재 진행상태 (체크리스트)
 
-- [x] 스케줄 기반 경기 인덱스 생성 (`gameSchedule → game_index_played.csv`)
+- [x] 스케줄 기반 경기 인덱스 생성 (`gameSchedule → game_index.csv`)
 - [x] 경기 상세 수집 (`gameLineup`, `gameBoxscore`)
 - [x] 라인업 테이블 생성 (`lineup_long.csv`)
 - [x] playerDay 수집(라인업 등장 선수만) + 테이블화
 - [x] 룩어헤드 없는 피처 테이블 생성 (`features_v0.csv`)
 - [x] 베이스라인 백테스트 실행(파이프라인 검증용)
+- [x] 노이즈 피처 자동 분석/드롭 규칙 적용
+- [x] 모델 Zoo 비교(선형/부스팅/포레스트/NB)
+- [x] 챔피언 RF 모델 백테스트 스크립트 고정
+- [x] 모델 예측 결과 제출 스크립트 추가 (`savePrediction` POST)
 
 - [ ] 피처 개선(전년도/커리어 prior, 최근 N경기 폼 등)
-- [ ] 모델 고도화(LightGBM/CatBoost) + 확률 캘리브레이션
+- [ ] 외부 라이브러리 기반 모델(LightGBM/CatBoost) 추가 검증
 - [ ] 제출 자동화(당일 스케줄 → 라인업 → 예측 → POST)
 
 ---
@@ -76,7 +80,7 @@ python3 -c "import os; print('KEY OK' if os.getenv('STATIZ_API_KEY') else 'KEY N
 | 목적 | 스크립트 | 주요 산출물 |
 |---|---|---|
 | 날짜별 스케줄 raw 저장 | `scripts/download_schedule.py` | `data/raw_schedule/YYYYMMDD.json` |
-| 경기 인덱스 생성 | `scripts/build_game_index.py` | `data/game_index_played.csv` |
+| 경기 인덱스 생성 | `scripts/build_game_index.py` | `data/game_index.csv`, `data/game_index_played.csv` |
 | 라인업/박스스코어 raw 저장 | `scripts/download_game_details.py` | `data/raw_lineup/*.json`, `data/raw_boxscore/*.json` |
 | 라인업 테이블 생성 | `scripts/build_lineup_table.py` | `data/lineup_long.csv` |
 | (p_no,year) 인덱스 생성 | `scripts/build_player_year_index.py` | `data/player_year_index.csv` |
@@ -84,6 +88,11 @@ python3 -c "import os; print('KEY OK' if os.getenv('STATIZ_API_KEY') else 'KEY N
 | playerDay 테이블 생성 | `scripts/build_playerday_tables_v2.py` | `data/playerday_*_long.csv` |
 | 피처 생성(베이스라인) | `scripts/build_features_v0.py` | `data/features_v0.csv` |
 | 베이스라인 백테스트 | `scripts/backtest_v0_online_lr.py` | `data/backtest_pred_v0.csv` |
+| 노이즈 피처 분석 | `scripts/analyze_feature_noise.py` | `data/feature_noise_report.csv` |
+| 모델 비교(Model Zoo) | `scripts/backtest_v3_model_zoo.py` | `data/backtest_v3_model_report.csv` |
+| 챔피언 RF 백테스트 | `scripts/backtest_v4_champion_rf.py` | `data/backtest_pred_v4_champion_rf.csv` |
+| 모델 예측 제출(POST) | `scripts/submit_predictions.py` | `~/statiz/data/save_prediction_result.csv` |
+| 제출 파이프라인(생성+제출) | `scripts/run_submit_pipeline_v5.py` | `~/statiz/data/backtest_pred_v5_best.csv`, `~/statiz/data/save_prediction_result.csv` |
 
 ---
 

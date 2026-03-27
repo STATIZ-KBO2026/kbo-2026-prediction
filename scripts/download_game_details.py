@@ -6,7 +6,7 @@ API_KEY = os.environ["STATIZ_API_KEY"]
 SECRET  = os.environ["STATIZ_SECRET"].encode("utf-8")
 
 BASE = "https://api.statiz.co.kr/baseballApi"
-INDEX_CSV = os.path.expanduser("~/statiz/data/game_index_played.csv")
+INDEX_CSV = os.path.expanduser("~/statiz/data/game_index.csv")
 
 OUT_LINEUP = os.path.expanduser("~/statiz/data/raw_lineup")
 OUT_BOXS   = os.path.expanduser("~/statiz/data/raw_boxscore")
@@ -33,9 +33,20 @@ def signed_get(path: str, params: dict, timeout=20):
         body = resp.read().decode("utf-8", errors="replace")
         return resp.status, body
 
-def read_snos(limit=None):
+def existing_ok(out_fp):
+    if not os.path.exists(out_fp):
+        return False
+    try:
+        with open(out_fp, "r", encoding="utf-8") as f:
+            body = f.read()
+        return is_ok(body)
+    except Exception:
+        return False
+
+
+def read_snos(index_csv, limit=None):
     snos = []
-    with open(INDEX_CSV, "r", encoding="utf-8") as f:
+    with open(index_csv, "r", encoding="utf-8") as f:
         r = csv.DictReader(f)
         for row in r:
             snos.append(int(row["s_no"]))
@@ -66,20 +77,22 @@ def fetch_one(s_no, sleep_sec=0.15, retries=3):
 
     for path, params, out_dir in tasks:
         out_fp = os.path.join(out_dir, f"{s_no}.json")
-        if os.path.exists(out_fp):
+        if existing_ok(out_fp):
             continue
 
         last_err = None
         for attempt in range(1, retries + 1):
             try:
                 status, body = signed_get(path, params)
-                save_json(out_dir, s_no, body)
-
                 ok = (status == 200 and is_ok(body))
-                if not ok:
+                if ok:
+                    save_json(out_dir, s_no, body)
+                    time.sleep(sleep_sec)
+                    break
+                if attempt == retries:
                     print("FAIL", path, "s_no=", s_no, "status=", status)
-                time.sleep(sleep_sec)
-                break
+                else:
+                    time.sleep(0.4 * attempt)
             except (HTTPError, URLError, TimeoutError) as e:
                 last_err = e
                 time.sleep(0.5 * attempt)
@@ -88,10 +101,12 @@ def fetch_one(s_no, sleep_sec=0.15, retries=3):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", type=int, default=20, help="처음에는 20으로 테스트 추천")
+    ap.add_argument("--index-csv", default=INDEX_CSV, help="game index csv path")
+    ap.add_argument("--limit", type=int, default=0, help="0이면 전체, 양수면 앞에서 N개만 수집")
     args = ap.parse_args()
 
-    snos = read_snos(limit=args.limit)
+    snos = read_snos(args.index_csv, limit=args.limit)
+    print("index_csv:", args.index_csv)
     print("targets:", len(snos))
 
     for i, s_no in enumerate(snos, 1):

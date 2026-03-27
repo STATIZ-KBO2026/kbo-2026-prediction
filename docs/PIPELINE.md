@@ -11,7 +11,7 @@
 
 ~~~mermaid
 flowchart TD
-  S["A. gameSchedule 날짜별 수집"] --> I["B. game_index_played.csv 생성"]
+  S["A. gameSchedule 날짜별 수집"] --> I["B. game_index.csv 생성"]
   I --> D["C. gameLineup / gameBoxscore 수집"]
   D --> L["D. lineup_long.csv 생성"]
   L --> P["E. player_year_index.csv 생성"]
@@ -60,7 +60,7 @@ python3 -c "import os; print('KEY OK' if os.getenv('STATIZ_API_KEY') else 'KEY N
 
 ---
 
-### STEP A) 스케줄 수집 (2023~ 권장)
+### STEP A) 스케줄 수집 (기본: 2023-01-01 ~ 오늘)
 목표: 날짜별 `gameSchedule` 원본 JSON 저장
 
 ~~~bash
@@ -75,12 +75,12 @@ python3 scripts/download_schedule.py
 ls data/raw_schedule | wc -l
 ~~~
 
-> 수집 기간(2023~)은 `scripts/download_schedule.py` 내부의 `start/end`를 수정해 맞춥니다.
+> 기본값은 `2023-01-01`부터 오늘까지입니다. 필요하면 `scripts/download_schedule.py`의 `start/end`를 수정하세요.
 
 ---
 
 ### STEP B) 경기 인덱스 생성 (s_no 목록)
-목표: 경기번호 `s_no` 목록 생성 + 정규시즌/정상 경기 필터링
+목표: 경기번호 `s_no` 목록 생성 + played 경기 인덱스 분리
 
 ~~~bash
 python3 scripts/build_game_index.py
@@ -89,6 +89,10 @@ python3 scripts/build_game_index.py
 결과:
 - `data/game_index.csv`
 - `data/game_index_played.csv`
+
+설명:
+- `game_index.csv`: 스케줄에서 수집된 전체 경기 인덱스
+- `game_index_played.csv`: 점수가 존재하는(종료된) 경기 인덱스
 
 확인:
 ~~~bash
@@ -100,12 +104,17 @@ head -n 3 data/game_index_played.csv
 ### STEP C) 경기 상세 수집 (라인업/박스스코어)
 목표: 각 s_no로 라인업/박스스코어 원본 저장
 
-테스트(20경기):
+기본(전체):
+~~~bash
+python3 scripts/download_game_details.py
+~~~
+
+테스트(20경기만):
 ~~~bash
 python3 scripts/download_game_details.py --limit 20
 ~~~
 
-전체(백그라운드 권장):
+전체 백그라운드 실행:
 ~~~bash
 nohup python3 scripts/download_game_details.py --limit 0 > logs/game_details.log 2>&1 &
 ~~~
@@ -156,12 +165,17 @@ head -n 3 data/player_year_index.csv
 ### STEP F) playerDay 수집
 목표: `player_year_index.csv` 기반으로 playerDay raw 저장
 
-테스트(20개):
+기본(전체):
+~~~bash
+python3 scripts/download_playerday.py
+~~~
+
+테스트(20개만):
 ~~~bash
 python3 scripts/download_playerday.py --limit 20
 ~~~
 
-전체(백그라운드 권장):
+전체 백그라운드 실행:
 ~~~bash
 nohup python3 scripts/download_playerday.py --limit 0 > logs/playerday.log 2>&1 &
 ~~~
@@ -202,6 +216,7 @@ python3 scripts/build_features_v0.py
 
 결과:
 - `data/features_v0.csv`
+- 미종료 경기(예: 당일 경기)는 `y_home_win`이 빈 값으로 저장되며, 추론/제출용으로 사용
 
 확인:
 ~~~bash
@@ -220,6 +235,74 @@ python3 scripts/backtest_v0_online_lr.py
 
 결과:
 - `data/backtest_pred_v0.csv`
+
+---
+
+### STEP J) 고급 백테스트(노이즈 분석 + 모델 비교 + 챔피언 모델)
+
+노이즈 피처 리포트:
+~~~bash
+python3 scripts/analyze_feature_noise.py --train-start 20240101 --train-end 20241231 --test-start 20250101 --test-end 20251231
+~~~
+
+모델 Zoo 비교:
+~~~bash
+python3 scripts/backtest_v3_model_zoo.py --train-start 20240101 --train-end 20241231 --test-start 20250101 --test-end 20251231
+~~~
+
+챔피언 RF 백테스트:
+~~~bash
+python3 scripts/backtest_v4_champion_rf.py --train-start 20240101 --train-end 20241231 --test-start 20250101 --test-end 20251231
+~~~
+
+산출물:
+- `data/feature_noise_report.csv`
+- `data/backtest_v3_model_report.csv`
+- `data/backtest_pred_v3_best.csv`
+- `data/backtest_pred_v4_champion_rf.csv`
+
+---
+
+### STEP K) 모델 결과 제출 (`savePrediction` POST)
+목표: 모델 예측 CSV를 `/prediction/savePrediction`에 전송
+
+`statiz_prediction_v4.xlsx`의 **승부예측 결과 입력** 시트 기준:
+- 요청 필드: `s_no`, `percent`
+- 응답 필드: `cdoe`, `result_msg`
+
+사전 점검(dry-run):
+~~~bash
+python3 scripts/submit_predictions.py --in-csv ~/statiz/data/backtest_pred_v5_best.csv --dry-run --limit 5
+~~~
+
+실제 제출:
+~~~bash
+python3 scripts/submit_predictions.py --in-csv ~/statiz/data/backtest_pred_v5_best.csv
+~~~
+
+재실행 시 기존 성공건 스킵:
+~~~bash
+python3 scripts/submit_predictions.py --in-csv ~/statiz/data/backtest_pred_v5_best.csv --resume
+~~~
+
+특정 날짜만 제출(예: 2026-03-18 경기):
+~~~bash
+python3 scripts/submit_predictions.py --in-csv ~/statiz/data/backtest_pred_v5_best.csv --date 20260318
+~~~
+
+결과:
+- `~/statiz/data/save_prediction_result.csv`
+- 컬럼: `date`, `s_no`, `percent`, `cdoe`, `result_msg`, `http_status`, `ok`, `error`, `raw_body`
+
+원커맨드 파이프라인(백테스트 생성 + 제출):
+~~~bash
+python3 scripts/run_submit_pipeline_v5.py --dry-run --date 20260318
+~~~
+
+시범경기 기반 단순 파이프라인 테스트(제출 전 검증용):
+~~~bash
+python3 scripts/run_submit_pipeline_v5.py --season-mode exhibition --pipeline-test --dry-run --date 20260318
+~~~
 
 ---
 

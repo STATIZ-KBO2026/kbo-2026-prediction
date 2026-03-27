@@ -1,12 +1,56 @@
-import os, csv, json, glob
+import os, csv, json, glob, argparse
 
 RAW_LINEUP_DIR = os.path.expanduser("~/statiz/data/raw_lineup")
-INDEX_CSV      = os.path.expanduser("~/statiz/data/game_index_played.csv")
+INDEX_CSV      = os.path.expanduser("~/statiz/data/game_index.csv")
 OUT_CSV        = os.path.expanduser("~/statiz/data/lineup_long.csv")
 
-def load_index():
+def safe_int(x, default=0):
+    try:
+        if x is None:
+            return default
+        s = str(x).strip()
+        if s == "" or s.lower() == "none":
+            return default
+        return int(float(s))
+    except Exception:
+        return default
+
+def iter_team_players(data: dict):
+    # legacy shape: {"5002": [players...], "7002":[players...], ...}
+    team_rows = []
+    for team_key, players in data.items():
+        if team_key in ("result_cd", "result_msg", "update_time"):
+            continue
+        if isinstance(team_key, str) and team_key.isdigit() and isinstance(players, list):
+            team_rows.append((int(team_key), players))
+    if team_rows:
+        for item in team_rows:
+            yield item
+        return
+
+    # possible v4 shapes: {"t_code":[{...}, ...]} or {"t_code":{"5002":[...], ...}}
+    t_code_block = data.get("t_code", data.get("t_cdoe"))
+    if isinstance(t_code_block, dict):
+        for team_key, players in t_code_block.items():
+            if isinstance(team_key, str) and team_key.isdigit() and isinstance(players, list):
+                yield int(team_key), players
+        return
+
+    if isinstance(t_code_block, list):
+        grouped = {}
+        for p in t_code_block:
+            if not isinstance(p, dict):
+                continue
+            tc = safe_int(p.get("t_code"))
+            if not tc:
+                continue
+            grouped.setdefault(tc, []).append(p)
+        for tc, players in grouped.items():
+            yield tc, players
+
+def load_index(index_csv):
     idx = {}
-    with open(INDEX_CSV, "r", encoding="utf-8") as f:
+    with open(index_csv, "r", encoding="utf-8") as f:
         r = csv.DictReader(f)
         for row in r:
             s_no = int(row["s_no"])
@@ -18,7 +62,11 @@ def load_index():
     return idx
 
 def main():
-    idx = load_index()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--index-csv", default=INDEX_CSV, help="game index csv path")
+    args = ap.parse_args()
+
+    idx = load_index(args.index_csv)
     files = sorted(glob.glob(os.path.join(RAW_LINEUP_DIR, "*.json")))
 
     rows = []
@@ -34,19 +82,14 @@ def main():
         s_no = int(os.path.basename(fp).replace(".json", ""))
         meta = idx.get(s_no)
         if not meta:
-            # played index에 없는 경기면 스킵
+            # index에 없는 경기면 스킵
             continue
 
         homeTeam = meta["homeTeam"]
         awayTeam = meta["awayTeam"]
         date = meta["date"]
 
-        # 팀 키(숫자 문자열)만 처리
-        for team_key, players in data.items():
-            if not (isinstance(team_key, str) and team_key.isdigit() and isinstance(players, list)):
-                continue
-
-            t_code = int(team_key)
+        for t_code, players in iter_team_players(data):
             if t_code == homeTeam:
                 side = "home"
             elif t_code == awayTeam:
@@ -82,7 +125,7 @@ def main():
         w.writeheader()
         w.writerows(rows)
 
-    print("DONE", "rows=", len(rows), "out=", OUT_CSV)
+    print("DONE", "rows=", len(rows), "out=", OUT_CSV, "index_csv=", args.index_csv)
 
 if __name__ == "__main__":
     main()

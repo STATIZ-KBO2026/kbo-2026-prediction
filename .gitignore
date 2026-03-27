@@ -1,12 +1,49 @@
-﻿# --- secrets ---
+﻿# --- secrets / credentials ---
 .env
+.env.*
+!.env.example
 *.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+*_rsa
+*.secret
+secrets*.json
+credentials*.json
+auth*.json
 
-# --- generated data / logs (DO NOT COMMIT) ---
+# --- generated data / artifacts (DO NOT COMMIT) ---
 data/
 logs/
-__pycache__/
+results/
+results_*.csv
 *.log
+*.tmp
+*.bak
+*.sqlite
+*.db
+*.pkl
+*.joblib
+*.npy
+*.npz
+
+# --- python env / cache ---
+__pycache__/
+.venv/
+.venv*/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- local docs / exports ---
+statiz_prediction_v4.xlsx
 
 # --- OS ---
 .DS_Store

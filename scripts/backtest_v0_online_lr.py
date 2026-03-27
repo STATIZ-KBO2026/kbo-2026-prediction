@@ -1,42 +1,51 @@
-import os, csv, math
+import os, csv, math, argparse
 
-IN_CSV  = os.path.expanduser("~/statiz/data/features_v0.csv")
+IN_CSV = os.path.expanduser("~/statiz/data/features_v0.csv")
 OUT_CSV = os.path.expanduser("~/statiz/data/backtest_pred_v0.csv")
 
-# ✅ baseline에선 "ID성 컬럼"은 빼고, 연속형 피처만 쓴다
 EXCLUDE = {
-    "date","s_no","homeTeam","awayTeam",
-    "y_home_win","homeScore","awayScore",
-    "home_sp_p_no","away_sp_p_no",
-    "s_code",  # 구장/코드(숫자 카테고리)라 baseline에서는 제외
+    "date", "s_no", "homeTeam", "awayTeam",
+    "y_home_win", "homeScore", "awayScore",
+    "home_sp_p_no", "away_sp_p_no",
+    "s_code",
 }
 
 EPS = 1e-12
 
 def safe_float(x):
     try:
-        if x is None: return 0.0
+        if x is None:
+            return 0.0
         s = str(x).strip()
-        if s == "" or s.lower() == "none": return 0.0
+        if s == "" or s.lower() == "none":
+            return 0.0
         return float(s)
-    except:
+    except Exception:
         return 0.0
 
+def safe_int(x):
+    try:
+        if x is None:
+            return 0
+        s = str(x).strip()
+        if s == "" or s.lower() == "none":
+            return 0
+        return int(float(s))
+    except Exception:
+        return 0
+
 def sigmoid(z):
-    # overflow-safe sigmoid
     if z >= 0:
         ez = math.exp(-z)
         return 1.0 / (1.0 + ez)
-    else:
-        ez = math.exp(z)
-        return ez / (1.0 + ez)
+    ez = math.exp(z)
+    return ez / (1.0 + ez)
 
 def logloss(y, p):
     p = min(max(p, EPS), 1.0 - EPS)
     return -(y * math.log(p) + (1 - y) * math.log(1 - p))
 
 def auc_score(y_list, p_list):
-    # rank-based AUC with tie handling (O(n log n))
     pairs = sorted(zip(p_list, y_list), key=lambda x: x[0])
     n = len(pairs)
     n_pos = sum(y_list)
@@ -49,146 +58,189 @@ def auc_score(y_list, p_list):
     i = 0
     while i < n:
         j = i
-        # tie block
         while j < n and pairs[j][0] == pairs[i][0]:
             j += 1
-        # average rank for ties
         avg_rank = (rank + (rank + (j - i) - 1)) / 2.0
-        # add ranks for positives in this block
         for k in range(i, j):
             if pairs[k][1] == 1:
                 pos_rank_sum += avg_rank
         rank += (j - i)
         i = j
 
-    # Mann–Whitney U
     u = pos_rank_sum - n_pos * (n_pos + 1) / 2.0
     return u / (n_pos * n_neg)
 
-def main():
-    with open(IN_CSV, "r", encoding="utf-8") as f:
+def load_rows(in_csv):
+    with open(in_csv, "r", encoding="utf-8") as f:
         r = csv.DictReader(f)
-        cols = r.fieldnames
+        rows = list(r)
+        cols = r.fieldnames or []
+    rows.sort(key=lambda x: (x["date"], safe_int(x["s_no"])))
+    return rows, cols
 
-        feat_cols = [c for c in cols if c not in EXCLUDE]
-        # label
-        y_col = "y_home_win"
+def build_online_model(dim):
+    return {
+        "mean": [0.0] * dim,
+        "m2": [0.0] * dim,
+        "n_seen": 0,
+        "w": [0.0] * dim,
+        "b": 0.0,
+        "base_lr": 0.05,
+        "l2": 1e-4,
+        "step": 0,
+    }
 
-        # online standardization (using training history only)
-        d = len(feat_cols)
-        mean = [0.0] * d
-        m2   = [0.0] * d
-        n_seen = 0  # number of training samples incorporated into scaler
+def current_std(model):
+    if model["n_seen"] < 2:
+        return [1.0] * len(model["w"])
+    return [math.sqrt(model["m2"][i] / (model["n_seen"] - 1) + 1e-9) for i in range(len(model["w"]))]
 
-        # online logistic regression weights
-        w = [0.0] * d
-        b = 0.0
-        base_lr = 0.05
-        l2 = 1e-4
-        step = 0
+def standardize(model, x_raw, std):
+    return [(x_raw[i] - model["mean"][i]) / std[i] for i in range(len(model["w"]))]
 
-        def current_std():
-            if n_seen < 2:
-                return [1.0] * d
-            return [math.sqrt(m2[i] / (n_seen - 1) + 1e-9) for i in range(d)]
+def update_scaler(model, x_raw):
+    model["n_seen"] += 1
+    n_seen = model["n_seen"]
+    for i in range(len(model["w"])):
+        delta = x_raw[i] - model["mean"][i]
+        model["mean"][i] += delta / n_seen
+        delta2 = x_raw[i] - model["mean"][i]
+        model["m2"][i] += delta * delta2
 
-        def standardize(x, std):
-            return [(x[i] - mean[i]) / std[i] for i in range(d)]
+def predict_proba(model, x):
+    z = model["b"]
+    for i in range(len(model["w"])):
+        z += model["w"][i] * x[i]
+    return sigmoid(z)
 
-        def update_scaler(x_raw):
-            nonlocal n_seen
-            n_seen += 1
-            for i in range(d):
-                delta = x_raw[i] - mean[i]
-                mean[i] += delta / n_seen
-                delta2 = x_raw[i] - mean[i]
-                m2[i] += delta * delta2
+def train_one(model, x, y):
+    model["step"] += 1
+    lr = model["base_lr"] / (1.0 + 0.001 * model["step"])
+    p = predict_proba(model, x)
+    err = (p - y)
+    for i in range(len(model["w"])):
+        grad = err * x[i] + model["l2"] * model["w"][i]
+        model["w"][i] -= lr * grad
+    model["b"] -= lr * err
 
-        def predict_proba(x):
-            z = b
-            for i in range(d):
-                z += w[i] * x[i]
-            return sigmoid(z)
+def run_expanding(rows, feat_cols):
+    d = len(feat_cols)
+    model = build_online_model(d)
 
-        # process by date (expanding window daily)
-        pred_rows = []
-        all_y, all_p = [], []
-        total_loss = 0.0
-        total_acc = 0
-        total_n = 0
+    pred_rows = []
+    all_y, all_p = [], []
+    total_loss = 0.0
+    total_acc = 0
+    total_n = 0
 
-        cur_date = None
-        day_buf = []  # list of (date,s_no,y,x_raw)
+    cur_date = None
+    day_buf = []  # (date, s_no, y, x_raw)
 
-        def flush_day(buf):
-            nonlocal b, step, total_loss, total_acc, total_n
+    def flush_day(buf):
+        nonlocal total_loss, total_acc, total_n
+        if not buf:
+            return
+        std = current_std(model)
+        day_x = []
+        day_y = []
+        for date, s_no, y, x_raw in buf:
+            x = standardize(model, x_raw, std) if model["n_seen"] >= 2 else x_raw[:]
+            p = predict_proba(model, x)
+            pred_rows.append({"date": date, "s_no": s_no, "y": y, "p_homewin": p})
+            all_y.append(y)
+            all_p.append(p)
+            total_loss += logloss(y, p)
+            total_acc += (1 if ((p >= 0.5) == (y == 1)) else 0)
+            total_n += 1
+            day_x.append(x)
+            day_y.append(y)
 
-            if not buf:
-                return
+        for x, y in zip(day_x, day_y):
+            train_one(model, x, y)
+        for _, _, _, x_raw in buf:
+            update_scaler(model, x_raw)
 
-            std = current_std()
+    for row in rows:
+        date = row["date"]
+        s_no = row["s_no"]
+        y = int(float(row["y_home_win"]))
+        x_raw = [safe_float(row[c]) for c in feat_cols]
 
-            # 1) predict using model trained up to previous day
-            day_xnorm = []
-            day_y = []
-            for (date, s_no, y, x_raw) in buf:
-                x = standardize(x_raw, std) if n_seen >= 2 else x_raw[:]  # early days: no scaling
-                p = predict_proba(x)
+        if cur_date is None:
+            cur_date = date
+        if date != cur_date:
+            flush_day(day_buf)
+            day_buf = []
+            cur_date = date
+        day_buf.append((date, s_no, y, x_raw))
 
-                pred_rows.append({"date": date, "s_no": s_no, "y": y, "p_homewin": p})
-                all_y.append(y)
-                all_p.append(p)
+    flush_day(day_buf)
+    return pred_rows, total_n, total_acc, total_loss, all_y, all_p
 
-                total_loss += logloss(y, p)
-                total_acc += (1 if ((p >= 0.5) == (y == 1)) else 0)
-                total_n += 1
+def run_split(rows, feat_cols, train_start, train_end, test_start, test_end):
+    d = len(feat_cols)
+    model = build_online_model(d)
 
-                day_xnorm.append(x)
-                day_y.append(y)
+    train_rows = [r for r in rows if train_start <= r["date"] <= train_end]
+    test_rows = [r for r in rows if test_start <= r["date"] <= test_end]
 
-            # 2) after predicting the day, train on the same day (so next day can use)
-            for x, y in zip(day_xnorm, day_y):
-                step += 1
-                lr = base_lr / (1.0 + 0.001 * step)
+    for row in train_rows:
+        y = int(float(row["y_home_win"]))
+        x_raw = [safe_float(row[c]) for c in feat_cols]
+        std = current_std(model)
+        x = standardize(model, x_raw, std) if model["n_seen"] >= 2 else x_raw[:]
+        train_one(model, x, y)
+        update_scaler(model, x_raw)
 
-                p = predict_proba(x)
-                err = (p - y)
+    pred_rows = []
+    all_y, all_p = [], []
+    total_loss = 0.0
+    total_acc = 0
+    total_n = 0
 
-                # weights
-                for i in range(d):
-                    grad = err * x[i] + l2 * w[i]
-                    w[i] -= lr * grad
-                # bias
-                b -= lr * err
+    std = current_std(model)
+    for row in test_rows:
+        date = row["date"]
+        s_no = row["s_no"]
+        y = int(float(row["y_home_win"]))
+        x_raw = [safe_float(row[c]) for c in feat_cols]
+        x = standardize(model, x_raw, std) if model["n_seen"] >= 2 else x_raw[:]
+        p = predict_proba(model, x)
+        pred_rows.append({"date": date, "s_no": s_no, "y": y, "p_homewin": p})
+        all_y.append(y)
+        all_p.append(p)
+        total_loss += logloss(y, p)
+        total_acc += (1 if ((p >= 0.5) == (y == 1)) else 0)
+        total_n += 1
 
-            # 3) update scaler with raw x of the day (so next day uses it)
-            for (_, _, _, x_raw) in buf:
-                update_scaler(x_raw)
+    return pred_rows, total_n, total_acc, total_loss, all_y, all_p, len(train_rows), len(test_rows)
 
-        for row in r:
-            date = row["date"]
-            s_no = row["s_no"]
-            y = int(float(row[y_col]))
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--mode", choices=["expanding", "split"], default="expanding")
+    ap.add_argument("--train-start", default="20240101")
+    ap.add_argument("--train-end", default="20241231")
+    ap.add_argument("--test-start", default="20250101")
+    ap.add_argument("--test-end", default="20251231")
+    args = ap.parse_args()
 
-            x_raw = [safe_float(row[c]) for c in feat_cols]
+    rows, cols = load_rows(IN_CSV)
+    feat_cols = [c for c in cols if c not in EXCLUDE]
 
-            if cur_date is None:
-                cur_date = date
+    if args.mode == "expanding":
+        pred_rows, total_n, total_acc, total_loss, all_y, all_p = run_expanding(rows, feat_cols)
+        print("mode: expanding")
+    else:
+        pred_rows, total_n, total_acc, total_loss, all_y, all_p, tr_n, te_n = run_split(
+            rows, feat_cols, args.train_start, args.train_end, args.test_start, args.test_end
+        )
+        print("mode: split")
+        print("train_range:", args.train_start, "~", args.train_end, "train_games:", tr_n)
+        print("test_range:", args.test_start, "~", args.test_end, "test_games:", te_n)
 
-            if date != cur_date:
-                flush_day(day_buf)
-                day_buf = []
-                cur_date = date
-
-            day_buf.append((date, s_no, y, x_raw))
-
-        # last day
-        flush_day(day_buf)
-
-    # write predictions
     os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
     with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
-        wcsv = csv.DictWriter(f, fieldnames=["date","s_no","y","p_homewin"])
+        wcsv = csv.DictWriter(f, fieldnames=["date", "s_no", "y", "p_homewin"])
         wcsv.writeheader()
         wcsv.writerows(pred_rows)
 
