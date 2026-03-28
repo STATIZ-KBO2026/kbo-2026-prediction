@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge)]()
 
-> 📊 STATIZ API 기반 데이터 수집 → 피처 엔지니어링 → Expanding Window 백테스트
+> 📊 STATIZ API 기반 데이터 수집 → v1 피처 엔지니어링 → RF+HGBDT+LR 앙상블 → 동적 스케줄러 자동 제출
 
 </div>
 
@@ -22,7 +22,7 @@
 
 ### 📅 데이터 범위
 `2023` prior 전용<br>
-`2024~2025` 학습/평가<br>
+`2024~2026` 학습/평가<br>
 `2022` ❌ 사용 금지
 
 </td>
@@ -49,8 +49,6 @@ raw data 커밋 금지<br>
 
 ## 🗺️ 데이터 파이프라인
 
-전체 데이터 흐름을 한 눈에 볼 수 있습니다.
-
 ```mermaid
 flowchart LR
     subgraph 수집["🌐 데이터 수집"]
@@ -61,14 +59,14 @@ flowchart LR
 
     subgraph 가공["⚙️ 데이터 가공"]
         C --> D["👥 라인업 테이블<br><code>build_lineup_table.py</code>"]
-        D --> E["🆔 선수-연도 인덱스<br><code>build_player_year_index.py</code>"]
         F --> G["🏏 타자/투수 테이블<br><code>build_playerday_tables_v2.py</code>"]
     end
 
-    subgraph 실험["🧪 모델링"]
-        D & G --> H["🔧 피처 생성<br><code>build_features_*.py</code>"]
-        H --> I["📉 백테스트<br><code>backtest_*.py</code>"]
-        I --> J["🔍 피처 탐색<br><code>feature_subset_search_v1.py</code>"]
+    subgraph 실험["🧪 모델링 & 제출"]
+        D & G --> H["🔧 피처 생성<br><code>build_features_v1.py</code>"]
+        H --> I["📉 백테스트<br><code>backtest_v1_expanding.py</code>"]
+        H --> J["🤖 예측 파이프라인<br><code>run_submit_pipeline_v1.py</code>"]
+        J --> K["📤 자동 제출<br><code>submit_predictions.py</code>"]
     end
 
     style 수집 fill:#1a1a2e,stroke:#e94560,color:#fff
@@ -80,16 +78,16 @@ flowchart LR
 
 ## 🤖 실시간 예측 시스템
 
-경기 당일, **자동으로 승부를 예측하고 제출**하는 시스템입니다.
+경기 당일, **경기별 시작시간에 맞춰 자동으로 라인업 수집 → 예측 → 제출**하는 동적 스케줄러입니다.
 
 ### 어떻게 동작하나요?
 
 ```mermaid
 flowchart LR
-    A["📅 오늘 경기 조회\n몇 시에 어떤 팀이\n경기하는지 확인"] --> B["📋 라인업 수신\n양 팀의 출전 선수\n9명 + 선발투수 확인"]
-    B --> C["📊 전력 분석\n과거 성적 기반\n양 팀 전력 수치화"]
-    C --> D["🤖 AI 예측\n홈팀 승리확률\n계산"]
-    D --> E["📤 결과 제출\nSTATIZ 서버에\n예측값 전송"]
+    A["🕛 00:00 KST\n당일 스케줄 조회\n+ 전날 데이터 반영"] --> B["📋 T-50분\n라인업 API 수집\n(5분 간격 재시도)"]
+    B --> C["🔧 피처 생성\nv1 피처 테이블\n실시간 빌드"]
+    C --> D["🤖 AI 예측\nRF+HGBDT+LR\n가중 앙상블"]
+    D --> E["📤 T-15분 전\nSTATIZ 서버에\n예측값 제출"]
 
     style A fill:#1a1a2e,stroke:#e94560,color:#fff
     style B fill:#16213e,stroke:#0f3460,color:#fff
@@ -102,12 +100,19 @@ flowchart LR
 <tr>
 <td width="50%" valign="top">
 
-#### ⏰ 타이밍
-- **경기 ~1시간 전** — 라인업 발표
-- **예측 실행** — 라인업 확인 후 즉시
-- **제출 마감** — 경기 시작 15분 전
+#### ⏰ 동적 스케줄링
+경기 시작시간은 날마다 다를 수 있어 **고정 cron이 아닌 동적 스케줄링** 사용
 
-현재 매일 12:05(KST) cron 자동 실행 설정
+| 경기시작 | 라인업 수집 | 제출 마감 |
+|:--------:|:-----------:|:---------:|
+| 14:00 | 13:10 | 13:45 |
+| 17:00 | 16:10 | 16:45 |
+| 18:30 | 17:40 | 18:15 |
+
+```bash
+# cron 설정 (매일 00:00 KST 1회)
+0 0 * * * launch_scheduler.sh
+```
 
 </td>
 <td width="50%" valign="top">
@@ -115,167 +120,134 @@ flowchart LR
 #### 📁 관련 파일
 | 파일 | 역할 |
 |------|------|
-| `predict_today.py` | 전체 파이프라인 (원클릭) |
-| `schedule_predict.sh` | cron 자동 실행 래퍼 |
-| `logs/predict_*.csv` | 제출 결과 기록 |
+| `kbo_scheduler.py` | 동적 스케줄러 (핵심) |
+| `launch_scheduler.sh` | cron 래퍼 |
+| `run_submit_pipeline_v1.py` | 예측 + 제출 파이프라인 |
+| `submit_predictions.py` | API 제출 전용 |
+| `fetch_today_and_predict.py` | 수동 실행용 |
 
 </td>
 </tr>
 </table>
 
-#### 사용법
+---
 
-```bash
-# 오늘 경기 예측 + 제출
-python3 predict_today.py
+## 🧠 v1 모델 & 피처
 
-# 미리보기만 (제출하지 않음)
-python3 predict_today.py --dry-run
+### 앙상블 구성
 
-# 특정 날짜 지정
-python3 predict_today.py --date 20260321
-```
+| 모델 | 설정 | 역할 |
+|------|------|------|
+| **RF** | 200 trees, depth 6 | 비선형 패턴 포착 |
+| **HGBDT** | 300 iter, depth 4, lr 0.05 | 그래디언트 부스팅 |
+| **LR** | StandardScaler + L2 | 선형 베이스라인 |
+| **앙상블** | inverse-logloss 가중평균 | 최종 예측 |
+
+### v1 피처 (주요 추가분)
+
+| 카테고리 | 피처 | 설명 |
+|---|---|---|
+| H2H | `h2h_*` | 상대전적 누적 승률/득실차 |
+| 라인업 질 | `lineup_sum/core5/bottom4` | 타자 OPS 기반 라인업 평가 (전체/1-5번/6-9번) |
+| 핵심 불펜 | `bp_fatigue_*` | S+HD top4 투수의 최근 3일 투구수 가중 피로도 |
+| 구장 HR | `park_hr_factor` | 구장별 홈런 보정 계수 |
+| SP 피안타 | `sp_slg_against` | 선발투수 피SLG 누적 |
+| Cold Start | `cold_start` | 시즌 초반 전년도 데이터 fallback |
+
+### 백테스트 성적 (Expanding Window, 720경기)
+
+| 모델 | LogLoss ↓ | Accuracy | AUC ↑ |
+|------|:---------:|:--------:|:-----:|
+| **RF_200_d6** | **0.669** | **59.0%** | **0.629** |
+| HGBDT | 0.710 | 57.5% | 0.608 |
+| LR | 0.772 | 57.1% | 0.615 |
+| RF+HGBDT 앙상블 | 0.672 | 57.5% | 0.619 |
 
 ---
 
 ## 📂 스크립트 맵
 
-각 단계에서 어떤 스크립트를 실행하고, 어떤 파일이 생성되는지 정리한 표입니다.
-
 ### 🌐 수집 단계
 
 | 순서 | 스크립트 | 설명 | 산출물 |
 |:---:|----------|------|--------|
-| 1️⃣ | `download_schedule.py` | STATIZ API로 시즌 일정 수집 | `data/raw_schedule/*.json` |
+| 1️⃣ | `download_schedule.py` | STATIZ API로 시즌 일정 수집 | `raw_schedule/*.json` |
 | 2️⃣ | `build_game_index.py` | 경기번호(s_no) 목록 + 실제 경기 필터링 | `game_index.csv` · `game_index_played.csv` |
-| 3️⃣ | `download_game_details.py` | 경기별 라인업 + 박스스코어 수집 | `data/raw_lineup/*.json` · `data/raw_boxscore/*.json` |
-| 4️⃣ | `download_playerday.py` | 선수별 일자별 누적기록 수집 | `data/raw_playerday/*.json` |
+| 3️⃣ | `download_game_details.py` | 경기별 라인업 + 박스스코어 수집 | `raw_lineup/*.json` · `raw_boxscore/*.json` |
+| 4️⃣ | `download_playerday.py` | 선수별 일자별 누적기록 수집 | `raw_playerday/*.json` |
 
 ### ⚙️ 가공 단계
 
 | 순서 | 스크립트 | 설명 | 산출물 |
 |:---:|----------|------|--------|
 | 5️⃣ | `build_lineup_table.py` | raw 라인업을 long 형태로 변환 | `lineup_long.csv` |
-| 6️⃣ | `build_player_year_index.py` | 라인업 기반 (p_no, year) 인덱스 생성 | `player_year_index.csv` |
-| 7️⃣ | `build_playerday_tables_v2.py` | raw playerDay를 타자/투수 테이블로 변환 | `playerday_batter_long.csv` · `playerday_pitcher_long.csv` |
+| 6️⃣ | `build_playerday_tables_v2.py` | raw playerDay를 타자/투수 테이블로 변환 | `playerday_batter_long.csv` · `playerday_pitcher_long.csv` |
 
-### 🧪 실험 단계
+### 🧪 모델링 & 제출 단계
 
 | 순서 | 스크립트 | 설명 | 산출물 |
 |:---:|----------|------|--------|
-| 8️⃣ | `build_features_v1_paper.py` | 핵심 4피처 생성 | `features_v1_paper.csv` |
-| 8️⃣ | `build_features_v2_candidates.py` | 기존 4 + 새 후보 8 = 12피처 생성 | `features_v2_candidates.csv` |
-| 9️⃣ | `backtest_v1_online_lr.py` | Expanding window 백테스트 | `backtest_pred_v1.csv` |
-| 9️⃣ | `feature_subset_search_v1.py` | 전체 subset 자동 탐색 (최대 4095 조합) | `feature_subset_search_v1.csv` |
-| 🔟 | `backtest_top10_block_report_v1.py` | 상위 조합 주차별 상세 리포트 | `top10_subset_*.csv` |
-| 🔟 | `inspect_lr_coef_v1.py` | 로지스틱 회귀 계수 해석 | `backtest_lr_coef_v1.csv` |
+| 7️⃣ | `build_features_v1.py` | v1 피처 생성 (H2H, 불펜, 라인업 등) | `features_v1.csv` |
+| 8️⃣ | `backtest_v1_expanding.py` | Expanding window 백테스트 | `backtest_v1_expanding_report.csv` |
+| 8️⃣ | `backtest_v3_model_zoo.py` | 모델 Zoo 유틸 (공용 라이브러리) | - |
+| 9️⃣ | `run_submit_pipeline_v1.py` | 학습 → 예측 → 앙상블 → 제출 | `pred_v1_today.csv` |
+| 🔟 | `submit_predictions.py` | savePrediction API 제출 | `save_prediction_result.csv` |
 
----
+### ⏰ 자동화
 
-## 🏗️ 피처 사전
-
-### 기존 핵심 4피처 (v1)
-
-| 피처명 | 설명 | 데이터 원천 |
-|--------|------|-------------|
-| `diff_sum_ops_smooth` | 양 팀 선발 1~9번 타자 시즌 누적 OPS 합 차이 (K=20 smoothing) | `playerday_batter_long` |
-| `diff_sum_ops_recent5` | 양 팀 선발 타자 최근 5경기 OPS 합 차이 | `playerday_batter_long` |
-| `diff_sp_oops` | 양 팀 선발투수 피OPS 차이 (K=20 smoothing) | `playerday_pitcher_long` |
-| `diff_bullpen_fatigue` | 핵심 불펜 4명의 가중 피로도 합 차이 | `playerday_pitcher_long` |
-
-### 새 후보 피처 (v2)
-
-| 피처명 | 설명 | 데이터 원천 |
-|--------|------|-------------|
-| `diff_opp_sp_platoon_cnt` | 상대 선발투수와 반대손 타자 수 차이 | `lineup_long` |
-| `diff_sp_bbip` | 선발투수 BB/IP 차이 (제구력 지표) | `playerday_pitcher_long` |
-| `diff_pythag_winpct` | 피타고리안 승률 차이 (팀 전력 수준) | `game_index_played` |
-| `diff_recent10_winpct` | 최근 10경기 승률 차이 (최근 폼) | `game_index_played` |
-| `diff_top5_ops_smooth` | 상위 5번 타순 OPS 합 차이 | `playerday_batter_long` |
-| `diff_team_stadium_winpct` | 해당 구장에서의 팀 승률 차이 | `game_index_played` |
-| `park_factor_stadium` | 구장 파크팩터 | `game_index_played` |
-| `diff_team_stadium_winpct_pfadj` | 구장 승률 × 파크팩터 보정 | `game_index_played` |
-
----
-
-## 📊 실험 결과 요약
-
-### 모델 설정
-
-| 항목 | 설정 |
-|------|------|
-| 모델 | `StandardScaler` + `LogisticRegression` |
-| 평가 방식 | Expanding Window |
-| Seed Train | 2024 시즌 |
-| Test | 2025 시즌 |
-| 재학습 주기 | 7일 |
-
-### 성능 비교
-
-| 실험 | ACC | LOGLOSS ↓ | BRIER ↓ | AUC ↑ |
-|------|:---:|:---------:|:-------:|:-----:|
-| **v1 기준선** (4피처) | 0.547 | 0.6865 | 0.2467 | 0.5676 |
-| **v2 최고 조합** (3피처) | **0.582** | **0.6746** | **0.2408** | **0.6153** |
-
-> 🏆 **현재 최고 조합**: `diff_bullpen_fatigue` + `diff_sp_bbip` + `diff_pythag_winpct`
+| 스크립트 | 설명 |
+|----------|------|
+| `kbo_scheduler.py` | 동적 스케줄러: 00시 모델 업데이트 + 경기별 T-50분 라인업 수집/예측/제출 |
+| `launch_scheduler.sh` | cron용 래퍼 (환경변수 로드 + 로그) |
+| `fetch_today_and_predict.py` | 수동 실행용 전체 파이프라인 |
+| `daily_update_v1.sh` | 수동 일일 업데이트 셸 스크립트 |
 
 ---
 
 ## 🚀 Quick Start
 
+> 전제: STATIZ API는 **허용 IP(화이트리스트)** 기반 — **EC2(등록된 고정 IP)에서 실행** 권장
+
+### 1) Key/Secret 환경변수 설정 (필수)
 ```bash
-# EC2 접속
-cd ~/statiz
+export STATIZ_API_KEY="..."
+export STATIZ_SECRET="..."
+```
 
-# 데이터 수집 (이미 완료된 경우 생략)
-python3 scripts/download_schedule.py
+### 2) 데이터 수집 (초기 세팅, 최초 1회)
+```bash
+python3 scripts/download_schedule.py --date-from 20230101 --date-to 20260329
+python3 scripts/download_game_details.py --date-from 20230101 --date-to 20260329
+python3 scripts/download_playerday.py --date-from 20230101 --date-to 20260329
+```
+
+### 3) 테이블 & 피처 빌드
+```bash
 python3 scripts/build_game_index.py
-python3 scripts/download_game_details.py
-python3 scripts/download_playerday.py
-
-# 데이터 가공
 python3 scripts/build_lineup_table.py
-python3 scripts/build_player_year_index.py
 python3 scripts/build_playerday_tables_v2.py
-
-# 피처 생성 & 백테스트
-python3 scripts/build_features_v2_candidates.py
-python3 scripts/feature_subset_search_v1.py
-
-# 🔥 오늘 경기 예측 + 제출
-python3 predict_today.py
+python3 scripts/build_features_v1.py
 ```
 
----
-
-## 📁 프로젝트 구조
-
+### 4) 백테스트 실행
+```bash
+python3 scripts/backtest_v1_expanding.py --lightweight
 ```
-kbo-2026-prediction/
-├── 📄 README.md
-├── 📄 LICENSE
-├── 📄 .gitignore
-│
-├── 🤖 predict_today.py              ← 일일 예측 파이프라인 (원클릭)
-├── ⏰ schedule_predict.sh            ← cron 자동 실행 래퍼
-│
-├── 📂 scripts/                       ← 데이터 수집·가공·실험 스크립트
-│   ├── 🌐 download_schedule.py            1단계  일정 수집
-│   ├── 📋 build_game_index.py             2단계  경기 인덱스
-│   ├── 🌐 download_game_details.py        3단계  상세 수집
-│   ├── 🌐 download_playerday.py           4단계  playerDay 수집
-│   ├── 👥 build_lineup_table.py           5단계  라인업 테이블
-│   ├── 🆔 build_player_year_index.py      6단계  선수 인덱스
-│   ├── ⚙️ build_playerday_tables_v2.py     7단계  타자/투수 테이블
-│   ├── 🔧 build_features_v1_paper.py      8단계  v1 피처
-│   ├── 🔧 build_features_v2_candidates.py 8단계  v2 피처
-│   ├── 📉 backtest_v1_online_lr.py        9단계  백테스트
-│   ├── 🔍 feature_subset_search_v1.py     9단계  subset 탐색
-│   ├── 📊 backtest_top10_block_report_v1.py 10단계 상위 리포트
-│   └── 🔬 inspect_lr_coef_v1.py           10단계 계수 해석
-│
-├── 📂 data/                          ← 데이터 저장소 (git 제외)
-└── 📂 logs/                          ← 예측 제출 로그 (git 제외)
+
+### 5) 수동 예측 & 제출
+```bash
+# 오늘 경기 예측 (dry-run)
+python3 scripts/run_submit_pipeline_v1.py --date 20260329 --skip-submit
+
+# 실제 제출
+python3 scripts/run_submit_pipeline_v1.py --date 20260329
+```
+
+### 6) 자동 제출 설정 (cron)
+```bash
+crontab -e
+# 추가 (매일 00:00 KST):
+0 0 * * * /path/to/scripts/launch_scheduler.sh >> ~/statiz/logs/scheduler.log 2>&1
 ```
 
 ---

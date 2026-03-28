@@ -1,95 +1,111 @@
-"""
-경기 일정 raw JSON → 경기 인덱스 CSV 변환기
-
-download_schedule.py가 저장한 날짜별 JSON 파일들을 읽어서,
-모든 경기를 한 줄씩 정리한 game_index.csv를 생성합니다.
-
-이 CSV는 이후 스크립트들(라인업 수집, 피처 생성 등)에서
-"어떤 경기가 있었는지"를 조회할 때 기준 테이블로 사용됩니다.
-
-[파이프라인 위치]
-  2단계 — download_schedule.py 다음에 실행합니다.
-
-[입력]
-  - ~/statiz/data/raw_schedule/*.json (날짜별 경기 일정 raw JSON)
-
-[출력]
-  - ~/statiz/data/game_index.csv
-    컬럼: date, s_no, state, leagueType, s_code, awayTeam, homeTeam,
-          awaySP, homeSP, awaySPName, homeSPName, awayScore, homeScore, hm, gameDate
-"""
-
 import os, json, glob, csv
 
-# 입력/출력 경로
 RAW_DIR = os.path.expanduser("~/statiz/data/raw_schedule")
-OUT_CSV = os.path.expanduser("~/statiz/data/game_index.csv")
+OUT_ALL_CSV = os.path.expanduser("~/statiz/data/game_index.csv")
+OUT_PLAYED_CSV = os.path.expanduser("~/statiz/data/game_index_played.csv")
+MIN_DATE = "20230101"  # 대회 규칙: 2023년 데이터부터 사용
 
+def safe_int(x):
+    try:
+        if x is None:
+            return None
+        s = str(x).strip()
+        if s == "" or s.lower() == "none":
+            return None
+        return int(float(s))
+    except Exception:
+        return None
 
-def main():
-    """raw_schedule 폴더의 JSON들을 읽어 경기 인덱스 CSV를 만듭니다."""
-    files = sorted(glob.glob(os.path.join(RAW_DIR, "*.json")))
-    os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
+def is_played_row(row):
+    # 결과 점수가 확정된 경기만 played로 간주
+    hs = safe_int(row.get("homeScore"))
+    aw = safe_int(row.get("awayScore"))
+    return hs is not None and aw is not None
 
-    rows = []
-    for fp in files:
-        # 파일명에서 날짜 추출 (예: 20240503.json → "20240503")
-        ymd = os.path.basename(fp).replace(".json", "")
-
-        with open(fp, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        # result_cd가 100이 아니면 비정상 응답이므로 스킵
-        if data.get("result_cd") != 100:
-            continue
-
-        # 날짜 키 찾기: API 응답에서 "0503" 같은 4자리 숫자 키가 경기 목록을 담고 있음
-        date_key = None
-        for k in data.keys():
-            if k.isdigit() and len(k) == 4:  # MMDD 형식
-                date_key = k
-                break
-        if not date_key:
-            continue
-
-        # 해당 날짜의 경기 목록을 순회하며 필요한 필드만 추출
-        games = data.get(date_key, [])
-        for g in games:
-            rows.append({
-                "date": ymd,                           # 날짜 (YYYYMMDD)
-                "s_no": g.get("s_no"),                 # 경기 고유번호
-                "state": g.get("state"),               # 경기 상태 (예: 종료, 진행중)
-                "leagueType": g.get("leagueType"),     # 리그 종류 (정규, 포스트 등)
-                "s_code": g.get("s_code"),             # 구장 코드
-                "awayTeam": g.get("awayTeam"),         # 원정팀 코드
-                "homeTeam": g.get("homeTeam"),         # 홈팀 코드
-                "awaySP": g.get("awaySP"),             # 원정 선발투수 번호
-                "homeSP": g.get("homeSP"),             # 홈 선발투수 번호
-                "awaySPName": g.get("awaySPName"),     # 원정 선발투수 이름
-                "homeSPName": g.get("homeSPName"),     # 홈 선발투수 이름
-                "awayScore": g.get("awayScore"),       # 원정팀 점수
-                "homeScore": g.get("homeScore"),       # 홈팀 점수
-                "hm": g.get("hm"),                     # 경기 시간
-                "gameDate": g.get("gameDate"),         # API 기준 경기 날짜
-            })
-
-    # s_no(경기번호)가 없는 행은 제거하고, 날짜+경기번호 순으로 정렬
-    rows = [r for r in rows if r["s_no"] is not None]
-    rows.sort(key=lambda r: (r["date"], r["s_no"]))
-
-    # CSV 헤더 설정: 데이터가 있으면 첫 번째 행의 키를 사용
-    fieldnames = list(rows[0].keys()) if rows else [
-        "date","s_no","state","leagueType","s_code","awayTeam","homeTeam",
-        "awaySP","homeSP","awaySPName","homeSPName","awayScore","homeScore","hm","gameDate"
-    ]
-
-    # CSV 파일로 저장
-    with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
+def write_csv(path, rows, fieldnames):
+    with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(rows)
 
-    print("DONE", "games=", len(rows), "out=", OUT_CSV)
+def extract_schedule_games(data):
+    # v4 spec shape: {"date": [ ...games... ], ...}
+    date_block = data.get("date")
+    if isinstance(date_block, list):
+        return date_block
+    if isinstance(date_block, dict):
+        out = []
+        for v in date_block.values():
+            if isinstance(v, list):
+                out.extend(v)
+        if out:
+            return out
+
+    # legacy shape: {"MMDD": [ ...games... ], ...}
+    for k, v in data.items():
+        if isinstance(k, str) and k.isdigit() and len(k) == 4 and isinstance(v, list):
+            return v
+    return []
+
+def main():
+    files = sorted(glob.glob(os.path.join(RAW_DIR, "*.json")))
+    os.makedirs(os.path.dirname(OUT_ALL_CSV), exist_ok=True)
+
+    rows = []
+    for fp in files:
+        ymd = os.path.basename(fp).replace(".json", "")  # YYYYMMDD
+        with open(fp, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # 정상 응답만
+        if data.get("result_cd") != 100:
+            continue
+
+        games = extract_schedule_games(data)
+        for g in games:
+            # 예측에 유용한 경기 컨텍스트(날씨/환경 포함)를 함께 저장
+            rows.append({
+                "date": ymd,
+                "s_no": g.get("s_no"),
+                "state": g.get("s_state", g.get("state")),
+                "leagueType": g.get("leagueType"),
+                "s_code": g.get("s_code"),
+                "awayTeam": g.get("awayTeam"),
+                "homeTeam": g.get("homeTeam"),
+                "awaySP": g.get("awaySP"),
+                "homeSP": g.get("homeSP"),
+                "awaySPName": g.get("awaySPName"),
+                "homeSPName": g.get("homeSPName"),
+                "awayScore": g.get("awayScore"),
+                "homeScore": g.get("homeScore"),
+                "hm": g.get("hm"),
+                "gameDate": g.get("gameDate"),
+                "weather": g.get("weather"),
+                "temperature": g.get("temperature"),
+                "humidity": g.get("humidity"),
+                "windDirection": g.get("windDirection"),
+                "windSpeed": g.get("windSpeed"),
+                "rainprobability": g.get("rainprobability"),
+            })
+
+    # s_no 없는 행 제거 + date/s_no 기준 정렬
+    rows = [r for r in rows if r["s_no"] is not None and str(r["date"]) >= MIN_DATE]
+    rows.sort(key=lambda r: (r["date"], r["s_no"]))
+
+    fieldnames = list(rows[0].keys()) if rows else [
+        "date","s_no","state","leagueType","s_code","awayTeam","homeTeam",
+        "awaySP","homeSP","awaySPName","homeSPName","awayScore","homeScore","hm","gameDate",
+        "weather","temperature","humidity","windDirection","windSpeed","rainprobability"
+    ]
+
+    played_rows = [r for r in rows if is_played_row(r)]
+
+    write_csv(OUT_ALL_CSV, rows, fieldnames)
+    write_csv(OUT_PLAYED_CSV, played_rows, fieldnames)
+
+    print("DONE")
+    print("all_games=", len(rows), "out=", OUT_ALL_CSV)
+    print("played_games=", len(played_rows), "out=", OUT_PLAYED_CSV)
 
 if __name__ == "__main__":
     main()

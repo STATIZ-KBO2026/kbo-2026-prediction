@@ -1,45 +1,56 @@
-"""
-라인업 raw JSON → 라인업 long 테이블 CSV 변환기
+import os, csv, json, glob, argparse
 
-download_game_details.py가 저장한 라인업 raw JSON들을 읽어서,
-경기-팀-선수 단위로 풀어낸 long 형태의 CSV를 생성합니다.
-
-이 CSV(lineup_long.csv)에는 각 경기의:
-  - 타순 1~9번 타자 정보
-  - 선발투수 정보
-  - 홈/원정 구분
-
-등이 들어 있어서, 이후 피처 생성 시 "어떤 선수가 몇 번 타순으로 출장했는지"를
-조회하는 데 사용됩니다.
-
-[파이프라인 위치]
-  4단계 — download_game_details.py 이후에 실행합니다.
-
-[입력]
-  - ~/statiz/data/raw_lineup/*.json  (경기별 라인업 raw JSON)
-  - ~/statiz/data/game_index_played.csv  (경기 메타정보: 날짜, 홈/원정팀)
-
-[출력]
-  - ~/statiz/data/lineup_long.csv
-"""
-
-import os, csv, json, glob
-
-# 입력/출력 경로
 RAW_LINEUP_DIR = os.path.expanduser("~/statiz/data/raw_lineup")
-INDEX_CSV      = os.path.expanduser("~/statiz/data/game_index_played.csv")
+INDEX_CSV      = os.path.expanduser("~/statiz/data/game_index.csv")
 OUT_CSV        = os.path.expanduser("~/statiz/data/lineup_long.csv")
 
+def safe_int(x, default=0):
+    try:
+        if x is None:
+            return default
+        s = str(x).strip()
+        if s == "" or s.lower() == "none":
+            return default
+        return int(float(s))
+    except Exception:
+        return default
 
-def load_index():
-    """
-    game_index_played.csv에서 경기별 메타정보를 딕셔너리로 읽어옵니다.
+def iter_team_players(data: dict):
+    # legacy shape: {"5002": [players...], "7002":[players...], ...}
+    team_rows = []
+    for team_key, players in data.items():
+        if team_key in ("result_cd", "result_msg", "update_time"):
+            continue
+        if isinstance(team_key, str) and team_key.isdigit() and isinstance(players, list):
+            team_rows.append((int(team_key), players))
+    if team_rows:
+        for item in team_rows:
+            yield item
+        return
 
-    Returns:
-        {s_no: {"date": "YYYYMMDD", "homeTeam": int, "awayTeam": int}} 형태의 dict
-    """
+    # possible v4 shapes: {"t_code":[{...}, ...]} or {"t_code":{"5002":[...], ...}}
+    t_code_block = data.get("t_code", data.get("t_cdoe"))
+    if isinstance(t_code_block, dict):
+        for team_key, players in t_code_block.items():
+            if isinstance(team_key, str) and team_key.isdigit() and isinstance(players, list):
+                yield int(team_key), players
+        return
+
+    if isinstance(t_code_block, list):
+        grouped = {}
+        for p in t_code_block:
+            if not isinstance(p, dict):
+                continue
+            tc = safe_int(p.get("t_code"))
+            if not tc:
+                continue
+            grouped.setdefault(tc, []).append(p)
+        for tc, players in grouped.items():
+            yield tc, players
+
+def load_index(index_csv):
     idx = {}
-    with open(INDEX_CSV, "r", encoding="utf-8") as f:
+    with open(index_csv, "r", encoding="utf-8") as f:
         r = csv.DictReader(f)
         for row in r:
             s_no = int(row["s_no"])
@@ -50,10 +61,12 @@ def load_index():
             }
     return idx
 
-
 def main():
-    """라인업 raw JSON들을 읽어 long 형태 CSV로 저장합니다."""
-    idx = load_index()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--index-csv", default=INDEX_CSV, help="game index csv path")
+    args = ap.parse_args()
+
+    idx = load_index(args.index_csv)
     files = sorted(glob.glob(os.path.join(RAW_LINEUP_DIR, "*.json")))
 
     rows = []
@@ -61,28 +74,22 @@ def main():
         with open(fp, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        # result_cd가 100이 아니면 비정상 응답이므로 스킵
+        # 정상 응답만
         if isinstance(data, dict) and data.get("result_cd") != 100:
             continue
 
-        # 파일명에서 s_no 추출 (예: 20240001.json → 20240001)
+        # s_no는 파일명에서 추출 (예: 20220001.json)
         s_no = int(os.path.basename(fp).replace(".json", ""))
         meta = idx.get(s_no)
         if not meta:
-            # game_index_played에 없는 경기면 스킵
+            # index에 없는 경기면 스킵
             continue
 
         homeTeam = meta["homeTeam"]
         awayTeam = meta["awayTeam"]
         date = meta["date"]
 
-        # API 응답에서 팀 코드(숫자 문자열)를 키로 쓰는 항목만 선수 목록임
-        for team_key, players in data.items():
-            if not (isinstance(team_key, str) and team_key.isdigit() and isinstance(players, list)):
-                continue
-
-            # 팀 코드로 홈/원정 구분
-            t_code = int(team_key)
+        for t_code, players in iter_team_players(data):
             if t_code == homeTeam:
                 side = "home"
             elif t_code == awayTeam:
@@ -90,25 +97,23 @@ def main():
             else:
                 side = "unknown"
 
-            # 선수 한 명씩 행으로 추가
             for p in players:
                 rows.append({
                     "date": date,
                     "s_no": s_no,
-                    "t_code": t_code,                           # 팀 코드
-                    "side": side,                               # 홈/원정 구분
-                    "battingOrder": p.get("battingOrder"),      # 타순 ("1"~"9" 또는 "P"=투수)
-                    "position": p.get("position"),              # 포지션
-                    "starting": p.get("starting"),              # 선발 여부
-                    "lineupState": p.get("lineupState"),        # 라인업 상태
-                    "p_no": p.get("p_no"),                      # 선수 고유번호
-                    "p_name": p.get("p_name"),                  # 선수 이름
-                    "p_bat": p.get("p_bat"),                    # 타석 (1=우타, 2=좌타, 3=스위치)
-                    "p_throw": p.get("p_throw"),                # 투구 손 (1,2=우투, 3,4=좌투)
-                    "p_backNumber": p.get("p_backNumber"),      # 등번호
+                    "t_code": t_code,
+                    "side": side,
+                    "battingOrder": p.get("battingOrder"),   # "1"~"9" or "P"
+                    "position": p.get("position"),
+                    "starting": p.get("starting"),
+                    "lineupState": p.get("lineupState"),
+                    "p_no": p.get("p_no"),
+                    "p_name": p.get("p_name"),
+                    "p_bat": p.get("p_bat"),
+                    "p_throw": p.get("p_throw"),
+                    "p_backNumber": p.get("p_backNumber"),
                 })
 
-    # CSV 파일로 저장
     os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
     fieldnames = [
         "date","s_no","t_code","side",
@@ -120,7 +125,7 @@ def main():
         w.writeheader()
         w.writerows(rows)
 
-    print("DONE", "rows=", len(rows), "out=", OUT_CSV)
+    print("DONE", "rows=", len(rows), "out=", OUT_CSV, "index_csv=", args.index_csv)
 
 if __name__ == "__main__":
     main()
