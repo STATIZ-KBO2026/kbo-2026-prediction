@@ -25,7 +25,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
@@ -86,14 +86,18 @@ def to_proba(model, X):
 
 
 def get_models(seed):
-    """경량 모델 (911MB 메모리 제한 환경)"""
+    """풀 모델 (백테스트 최적 설정, n_jobs=1 for EC2 안정성)"""
     return {
-        "RF": RandomForestClassifier(
-            n_estimators=200, max_depth=6, min_samples_leaf=5,
+        "RF_1200_d10": RandomForestClassifier(
+            n_estimators=1200, max_depth=10, min_samples_leaf=5,
+            max_features="sqrt", random_state=seed, n_jobs=1,
+        ),
+        "ET_1400_d10": ExtraTreesClassifier(
+            n_estimators=1400, max_depth=10, min_samples_leaf=3,
             max_features="sqrt", random_state=seed, n_jobs=1,
         ),
         "HGBDT": HistGradientBoostingClassifier(
-            learning_rate=0.05, max_iter=300, max_depth=4,
+            learning_rate=0.05, max_iter=500, max_depth=4,
             min_samples_leaf=20, random_state=seed,
         ),
         "LR": Pipeline([
