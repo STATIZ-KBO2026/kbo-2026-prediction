@@ -138,10 +138,12 @@ flowchart LR
 
 | 모델 | 설정 | 역할 |
 |------|------|------|
-| **RF** | 200 trees, depth 6 | 비선형 패턴 포착 |
-| **HGBDT** | 300 iter, depth 4, lr 0.05 | 그래디언트 부스팅 |
-| **LR** | StandardScaler + L2 | 선형 베이스라인 |
+| **RF_1200_d10** | 1200 trees, depth 10 | 비선형 패턴 포착 (메인) |
+| **ET_1400_d10** | 1400 trees, depth 10 | ExtraTrees (ACC 최고) |
+| **HGBDT** | 500 iter, depth 4, lr 0.05 | 그래디언트 부스팅 |
 | **앙상블** | inverse-logloss 가중평균 | 최종 예측 |
+
+> LR은 416개 피처 대비 데이터가 적어 과적합(확률 99%+ 출력) 문제로 제외
 
 ### v1 피처 (주요 추가분)
 
@@ -153,17 +155,18 @@ flowchart LR
 | 구장 HR | `park_hr_factor` | 구장별 홈런 보정 계수 |
 | SP 피안타 | `sp_slg_against` | 선발투수 피SLG 누적 |
 | Cold Start | `cold_start` | 시즌 초반 전년도 데이터 fallback |
+| 외국인 Cold Start | `cold_foreign_prob` | 외국인 선수는 **작년 외국인 평균** 성적을 기준값으로 사용 |
 
-### 피처 중요도 (RF Feature Importance)
+### 피처 중요도 (RF_1200_d10 Feature Importance)
 
-> 전체 449개 피처를 카테고리별로 묶은 결과입니다. 학습 데이터 2,396경기 기준.
+> 전체 416개 피처를 카테고리별로 묶은 결과입니다. prior 피처는 blend와 중복(시즌 후반 corr>0.99)되어 제거.
 
 | 순위 | 카테고리 | 총 중요도 | 핵심 피처 (Top 3) |
 |:---:|----------|:---------:|-------------------|
 | 1 | **선발투수 지표** | **32.0%** | 탈삼진율 K/9 차이, 볼넷율 BB/9 차이, WHIP 차이 |
 | 2 | **불펜 피로도** | **9.6%** | 최근 3일 투구수/등판 비율 차이, 최근 3일 총투구수, WHIP 차이 |
 | 3 | **라인업 질** | **7.3%** | 라인업 삼진/타수 차이, 6-9번 타자 OPS, 라인업 전체 삼진률 |
-| 4 | **라인업 타격지표** | **7.1%** | 블렌드 삼진/타석 차이, 신뢰도 가중 평균, prior 삼진률 |
+| 4 | **라인업 타격지표** | **7.1%** | 블렌드 삼진/타석 차이, 신뢰도 가중 평균 |
 | 5 | **팀 승률** | **5.1%** | 홈팀 전체 승률, 승률 차이, 원정팀 원정 승률 |
 | 6 | **라인업 좌우분할** | **3.1%** | 상대 투수 반대손 삼진률 차이 |
 | 7 | **좌우 매치업** | **2.9%** | 반대손 타자 수 차이 (원정/차이/홈) |
@@ -173,36 +176,41 @@ flowchart LR
 | 11 | **구장 HR** | **0.4%** | 구장 홈런 파크팩터 |
 
 <details>
-<summary><b>개별 피처 Top 15 상세보기</b></summary>
+<summary><b>개별 피처 Top 20 상세보기</b></summary>
 
 | 순위 | 피처명 | 중요도 | 의미 |
 |:---:|--------|:------:|------|
-| 1 | `away_count_matchup_edge` | 1.09% | 원정팀 상대 선발투수 반대손 타자 수 |
-| 2 | `diff_sp_prior_K9` | 1.08% | 양팀 선발투수 탈삼진율(K/9) 차이 (전년도+올해 블렌드) |
-| 3 | `diff_count_matchup_edge` | 1.07% | 양팀 좌우 매치업 유리함 차이 |
-| 4 | `diff_lineup_blend_so_per_pa` | 0.98% | 양팀 라인업 삼진/타석 블렌드 차이 |
-| 5 | `diff_sp_blend_BB9` | 0.89% | 양팀 선발투수 볼넷율(BB/9) 블렌드 차이 |
-| 6 | `away_lineup_state_y_rate` | 0.83% | 원정팀 라인업 중 전날 출전한 비율 |
-| 7 | `diff_sp_blend_WHIP` | 0.83% | 양팀 선발투수 WHIP 블렌드 차이 |
-| 8 | `home_count_matchup_edge` | 0.79% | 홈팀 상대 선발투수 반대손 타자 수 |
-| 9 | `diff_lineup_vs_throw_split_so_per_pa` | 0.76% | 양팀 라인업의 상대투수 좌우별 삼진율 차이 |
-| 10 | `diff_lineup_sum_so_per_ab` | 0.74% | 양팀 라인업 삼진/타수 합계 차이 |
-| 11 | `diff_sp_prior_WHIP` | 0.74% | 양팀 선발투수 WHIP 차이 (전년도+올해 블렌드) |
-| 12 | `diff_lineup_hist_reliability_avg` | 0.72% | 양팀 라인업 과거 기록 신뢰도 평균 차이 |
-| 13 | `diff_lineup_prior_so_per_pa` | 0.71% | 양팀 라인업 prior 삼진률 차이 |
-| 14 | `diff_sp_prior_BB9` | 0.69% | 양팀 선발투수 볼넷율(BB/9) 차이 (prior) |
-| 15 | `home_sp_prior_K9` | 0.67% | 홈팀 선발투수 탈삼진율 (prior) |
+| 1 | `diff_lineup_sum_so_per_ab` | 0.73% | 양팀 라인업 삼진/타수 합계 차이 |
+| 2 | `diff_count_matchup_edge` | 0.72% | 양팀 좌우 매치업 유리함 차이 |
+| 3 | `diff_sp_blend_K9` | 0.68% | 양팀 선발투수 탈삼진율(K/9) 블렌드 차이 |
+| 4 | `diff_lineup_vs_throw_split_so_per_pa` | 0.67% | 양팀 라인업의 상대투수 좌우별 삼진율 차이 |
+| 5 | `diff_lineup_blend_so_per_pa` | 0.67% | 양팀 라인업 삼진/타석 블렌드 차이 |
+| 6 | `home_count_matchup_edge` | 0.66% | 홈팀 상대 선발투수 반대손 타자 수 |
+| 7 | `diff_sp_blend_BB9` | 0.62% | 양팀 선발투수 볼넷율(BB/9) 블렌드 차이 |
+| 8 | `diff_sp_time_split_WHIP` | 0.62% | 양팀 선발투수 WHIP 주야간 차이 |
+| 9 | `away_count_matchup_edge` | 0.57% | 원정팀 상대 선발투수 반대손 타자 수 |
+| 10 | `diff_lineup_bb_per_pa` | 0.54% | 양팀 라인업 볼넷/타석 차이 |
+| 11 | `diff_sp_K9` | 0.54% | 양팀 선발투수 탈삼진율(K/9) 차이 (시즌 누적) |
+| 12 | `away_lineup_vs_throw_split_so_per_pa` | 0.53% | 원정팀 라인업 좌우분할 삼진율 |
+| 13 | `away_sp_blend_K9` | 0.53% | 원정 선발투수 탈삼진율 블렌드 |
+| 14 | `diff_sp_blend_WHIP` | 0.53% | 양팀 선발투수 WHIP 블렌드 차이 |
+| 15 | `home_sp_r5_BB9` | 0.51% | 홈팀 선발투수 최근 5경기 볼넷율 |
+| 16 | `diff_sp_BB9` | 0.50% | 양팀 선발투수 볼넷율(BB/9) 차이 (시즌 누적) |
+| 17 | `diff_sp_time_split_ERA` | 0.50% | 양팀 선발투수 ERA 주야간 차이 |
+| 18 | `diff_sp_SO_per_IP` | 0.50% | 양팀 선발투수 이닝당 탈삼진 차이 |
+| 19 | `diff_lineup_hist_reliability_avg` | 0.48% | 양팀 라인업 과거 기록 신뢰도 평균 차이 |
+| 20 | `away_lineup_state_y_rate` | 0.48% | 원정팀 라인업 중 전날 출전한 비율 |
 
 </details>
 
-### 백테스트 성적 (Expanding Window, 720경기)
+### 백테스트 성적 (Expanding Window, 725경기)
 
 | 모델 | LogLoss ↓ | Accuracy | AUC ↑ |
 |------|:---------:|:--------:|:-----:|
-| **RF_200_d6** | **0.669** | **59.0%** | **0.629** |
-| HGBDT | 0.710 | 57.5% | 0.608 |
-| LR | 0.772 | 57.1% | 0.615 |
-| RF+HGBDT 앙상블 | 0.672 | 57.5% | 0.619 |
+| **RF_1200_d10** | **0.668** | **60.0%** | 0.627 |
+| **ET_1400_d10** | 0.669 | 59.7% | **0.631** |
+| HGBDT | 0.735 | 58.5% | 0.624 |
+| Ensemble(top2) | **0.668** | **60.0%** | 0.630 |
 
 ---
 

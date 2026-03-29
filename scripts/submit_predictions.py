@@ -191,12 +191,13 @@ def signed_post(params, timeout=20):
     method = "POST"
     ts = str(int(time.time()))
     normalized, sig = sign_payload(method, PATH, params, ts, secret)
+    body_data = urllib.parse.urlencode(params).encode("utf-8")
     req = Request(
-        f"{BASE}/{PATH}",
+        f"{BASE}/{PATH}?{normalized}",
         method=method,
-        data=normalized.encode("utf-8"),
+        data=body_data,
         headers={
-            "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+            "Content-Type": "application/x-www-form-urlencoded",
             "X-API-KEY": api_key,
             "X-TIMESTAMP": ts,
             "X-SIGNATURE": sig,

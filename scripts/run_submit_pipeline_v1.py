@@ -86,7 +86,8 @@ def to_proba(model, X):
 
 
 def get_models(seed):
-    """풀 모델 (백테스트 최적 설정, n_jobs=1 for EC2 안정성)"""
+    """풀 모델 (백테스트 최적 설정, n_jobs=1 for EC2 안정성)
+    LR 제외: 416 피처에서 과적합 → 극단적 확률 출력 문제"""
     return {
         "RF_1200_d10": RandomForestClassifier(
             n_estimators=1200, max_depth=10, min_samples_leaf=5,
@@ -100,10 +101,6 @@ def get_models(seed):
             learning_rate=0.05, max_iter=500, max_depth=4,
             min_samples_leaf=20, random_state=seed,
         ),
-        "LR": Pipeline([
-            ("scaler", StandardScaler()),
-            ("clf", LogisticRegression(C=1.0, max_iter=5000, solver="lbfgs", random_state=seed)),
-        ]),
     }
 
 

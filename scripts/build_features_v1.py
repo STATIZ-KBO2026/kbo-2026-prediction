@@ -132,6 +132,31 @@ def better_low(value, ref, mult):
 def worse_high(value, ref, mult):
     return max(value, ref * mult) if ref > 0 else value
 
+def foreign_bat_avg(foreign_bat_year, year, lg_ops, lg_hr, lg_so):
+    """작년 외국인 타자 평균 OPS/HR/SO. 없으면 리그 평균 fallback."""
+    fy = foreign_bat_year.get(year - 1)
+    if not fy or fy["PA"] < 100:
+        return lg_ops, lg_hr, lg_so
+    pa = fy["PA"]; ab = max(fy["AB"], 1)
+    obp = div(fy["H"] + fy["BB"] + fy["HP"], pa + 1e-9)
+    slg = div(fy["TB"], ab)
+    ops = obp + slg
+    hr_rate = div(fy["HR"], pa)
+    so_rate = div(fy["SO"], pa)
+    return ops, hr_rate, so_rate
+
+def foreign_pit_avg(foreign_pit_year, year, lg_era, lg_whip, lg_k9, lg_bb9):
+    """작년 외국인 투수 평균 ERA/WHIP/K9/BB9. 없으면 리그 평균 fallback."""
+    fp = foreign_pit_year.get(year - 1)
+    if not fp or fp["IP"] < 50:
+        return lg_era, lg_whip, lg_k9, lg_bb9
+    ip = max(fp["IP"], 1.0)
+    era = div(fp["ER"] * 9.0, ip)
+    whip = div(fp["H"] + fp["BB"], ip)
+    k9 = div(fp["SO"] * 9.0, ip)
+    bb9 = div(fp["BB"] * 9.0, ip)
+    return era, whip, k9, bb9
+
 def normalize3(a, b, c):
     s = a + b + c
     if s <= 0:
@@ -1073,10 +1098,11 @@ def main():
                     player_meta[home_sp]["first_year"], year, min_data_year
                 )
                 h_role_era, h_role_whip, h_role_k9, h_role_bb9 = sp_side_prior(home_sp_throw)
-                h_fore_era = better_low(h_role_era, l_era, 0.96)
-                h_fore_whip = better_low(h_role_whip, l_whip, 0.97)
-                h_fore_k9 = worse_high(h_role_k9, l_k9, 1.05)
-                h_fore_bb9 = better_low(h_role_bb9, l_bb9, 0.98)
+                fp_era, fp_whip, fp_k9, fp_bb9 = foreign_pit_avg(foreign_pit_year, year, l_era, l_whip, l_k9, l_bb9)
+                h_fore_era = fp_era
+                h_fore_whip = fp_whip
+                h_fore_k9 = fp_k9
+                h_fore_bb9 = fp_bb9
                 h_rook_era = worse_high(h_role_era, l_era, 1.08)
                 h_rook_whip = worse_high(h_role_whip, l_whip, 1.08)
                 h_rook_k9 = better_low(h_role_k9, l_k9, 0.95)
@@ -1112,10 +1138,11 @@ def main():
                     player_meta[away_sp]["first_year"], year, min_data_year
                 )
                 a_role_era, a_role_whip, a_role_k9, a_role_bb9 = sp_side_prior(away_sp_throw)
-                a_fore_era = better_low(a_role_era, l_era, 0.96)
-                a_fore_whip = better_low(a_role_whip, l_whip, 0.97)
-                a_fore_k9 = worse_high(a_role_k9, l_k9, 1.05)
-                a_fore_bb9 = better_low(a_role_bb9, l_bb9, 0.98)
+                fp_era, fp_whip, fp_k9, fp_bb9 = foreign_pit_avg(foreign_pit_year, year, l_era, l_whip, l_k9, l_bb9)
+                a_fore_era = fp_era
+                a_fore_whip = fp_whip
+                a_fore_k9 = fp_k9
+                a_fore_bb9 = fp_bb9
                 a_rook_era = worse_high(a_role_era, l_era, 1.08)
                 a_rook_whip = worse_high(a_role_whip, l_whip, 1.08)
                 a_rook_k9 = better_low(a_role_k9, l_k9, 0.95)
@@ -1262,9 +1289,10 @@ def main():
                     hist_n = cur_pa + (PREV_YEAR_W * prev_pa) + (CAREER_W * car_pa)
                     hist_rel = div(hist_n, hist_n + BAT_PRIOR_PA)
 
-                    f_ops = worse_high(base_ops, l_ops, 1.04)
-                    f_hr = worse_high(base_hr, l_hr, 1.10)
-                    f_so = better_low(base_so, l_so, 0.98)
+                    fb_ops, fb_hr, fb_so = foreign_bat_avg(foreign_bat_year, year, l_ops, l_hr, l_so)
+                    f_ops = fb_ops
+                    f_hr = fb_hr
+                    f_so = fb_so
                     r_ops = better_low(base_ops, l_ops, 0.94)
                     r_hr = better_low(base_hr, l_hr, 0.90)
                     r_so = worse_high(base_so, l_so, 1.08)
