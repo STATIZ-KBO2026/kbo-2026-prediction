@@ -119,6 +119,45 @@ def fetch_lineup(s_no, force=False):
         return False
 
 
+def lineup_batters_confirmed(s_no, min_batters_per_team=7):
+    """배터 라인업이 확정됐는지 확인.
+    lineupState='Y'인 타자(battingOrder 1-9)가 팀당 min_batters_per_team명 이상이어야 함.
+    SP만 있는 경우(battingOrder='P')는 미확정으로 판단.
+    """
+    fpath = os.path.join(RAW_LINEUP, f"{s_no}.json")
+    if not os.path.exists(fpath):
+        return False
+    try:
+        with open(fpath, "r", encoding="utf-8") as f:
+            ldata = json.load(f)
+        team_batter_counts = {}
+        for key, val in ldata.items():
+            if not str(key).isdigit():
+                continue
+            if not isinstance(val, list):
+                continue
+            confirmed = 0
+            for player in val:
+                if not isinstance(player, dict):
+                    continue
+                bo = player.get("battingOrder", "P")
+                ls = player.get("lineupState", "N")
+                # battingOrder가 숫자(1-9)인 타자만 카운트
+                try:
+                    bo_int = int(bo)
+                    if 1 <= bo_int <= 9 and ls == "Y":
+                        confirmed += 1
+                except (ValueError, TypeError):
+                    pass
+            team_batter_counts[key] = confirmed
+        if not team_batter_counts:
+            return False
+        # 모든 팀이 min_batters_per_team명 이상 확정돼야 함
+        return all(cnt >= min_batters_per_team for cnt in team_batter_counts.values())
+    except Exception:
+        return False
+
+
 def fetch_boxscore(s_no, force=False):
     fpath = os.path.join(RAW_BOXSCORE, f"{s_no}.json")
     if os.path.exists(fpath) and not force:
@@ -230,50 +269,33 @@ def phase2_per_game(game, target_str, dry_run=False, season_mode="all"):
     log(f"{'='*50}")
 
     # 2a. Fetch lineup with retry (every 5min, up to deadline)
-    log("[2a] Fetching lineup ...")
-    lineup_ok = False
-    max_attempts = 8  # 50min / 5min = ~7 retries + initial
-    for attempt in range(1, max_attempts + 1):
+    # 배터 라인업(battingOrder 1-9, lineupState='Y')이 확정될 때까지 대기
+    log("[2a] Fetching lineup (waiting for batting lineup confirmation)...")
+    retry_interval_sec = 300  # 5분
+    while True:
         now_min = current_minutes()
         if now_min >= deadline_min:
-            log(f"  Deadline reached at attempt {attempt}. Proceeding with whatever we have.")
+            log(f"  Deadline {deadline_min//60:02d}:{deadline_min%60:02d} reached. "
+                f"Proceeding with current lineup data.")
             break
 
-        ok = fetch_lineup(s_no, force=True)
-        if ok:
-            # Verify lineup has actual player data
-            lpath = os.path.join(RAW_LINEUP, f"{s_no}.json")
-            try:
-                with open(lpath, "r", encoding="utf-8") as f:
-                    ldata = json.load(f)
-                # Check if lineup has meaningful data (not empty result)
-                has_players = False
-                for key in ["homeLineup", "awayLineup", "result"]:
-                    val = ldata.get(key)
-                    if isinstance(val, list) and len(val) > 0:
-                        has_players = True
-                        break
-                    if isinstance(val, dict):
-                        for sub in val.values():
-                            if isinstance(sub, list) and len(sub) > 0:
-                                has_players = True
-                                break
-                if has_players:
-                    log(f"  Lineup fetched OK (attempt {attempt})")
-                    lineup_ok = True
-                    break
-                else:
-                    log(f"  Lineup empty (attempt {attempt}), retrying in 5min ...")
-            except Exception:
-                log(f"  Lineup parse error (attempt {attempt}), retrying in 5min ...")
-        else:
-            log(f"  Lineup fetch failed (attempt {attempt}), retrying in 5min ...")
+        fetch_lineup(s_no, force=True)
+        if lineup_batters_confirmed(s_no):
+            log(f"  Batting lineup confirmed for s_no={s_no}!")
+            break
 
-        if attempt < max_attempts:
-            time.sleep(300)  # 5 minutes
+        remaining = (deadline_min - now_min) * 60
+        wait_sec = min(retry_interval_sec, max(0, remaining - 30))
+        if wait_sec <= 0:
+            log(f"  No time left to retry. Proceeding.")
+            break
+        log(f"  Batting lineup not ready (SP only?). Retrying in {wait_sec//60}m {wait_sec%60}s "
+            f"(deadline in {remaining//60}m)...")
+        time.sleep(wait_sec)
 
-    if not lineup_ok:
-        log(f"  WARNING: Could not get lineup for s_no={s_no}. Will predict with available data.")
+    if not lineup_batters_confirmed(s_no):
+        log(f"  WARNING: Batting lineup not fully confirmed for s_no={s_no}. "
+            f"Lineup features may be incomplete.")
 
     # 2b. Rebuild lineup table with new data
     log("[2b] Rebuilding lineup table ...")
@@ -366,53 +388,42 @@ def main():
             log(f"  Deadline already passed for {hm} games. Skipping.")
             continue
 
-        # Fetch lineups for all games in this group
-        log(f"[Fetch] Getting lineups for {hm} games ...")
-        all_lineups_ok = True
-        for g in group:
-            s_no = g["s_no"]
-            lineup_ok = False
-            max_attempts = 8
-            for attempt in range(1, max_attempts + 1):
-                now_min = current_minutes()
-                if now_min >= deadline_min:
-                    log(f"  Deadline reached for s_no={s_no}")
-                    break
+        # ── Lineup fetch + 배터 확정 대기 루프 ──
+        # T-50min부터 5분 간격으로 재시도, T-15min(deadline)까지 배터 라인업이
+        # 확정되길 기다렸다가 파이프라인 실행.
+        log(f"[Fetch] Getting lineups for {hm} games (waiting for batting lineup confirmation)...")
 
-                ok = fetch_lineup(s_no, force=True)
-                if ok:
-                    # Verify lineup has data
-                    lpath = os.path.join(RAW_LINEUP, f"{s_no}.json")
-                    try:
-                        with open(lpath, "r", encoding="utf-8") as f:
-                            ldata = json.load(f)
-                        has_data = False
-                        for key in list(ldata.keys()):
-                            val = ldata[key]
-                            if isinstance(val, list) and len(val) > 0:
-                                has_data = True
-                                break
-                            if isinstance(val, dict):
-                                for sub in val.values():
-                                    if isinstance(sub, list) and len(sub) > 0:
-                                        has_data = True
-                                        break
-                        if has_data:
-                            log(f"  Lineup s_no={s_no}: OK (attempt {attempt})")
-                            lineup_ok = True
-                            break
-                    except Exception:
-                        pass
+        retry_interval_sec = 300  # 5분
+        while True:
+            now_min = current_minutes()
+            if now_min >= deadline_min:
+                log(f"  Deadline {deadline_min//60:02d}:{deadline_min%60:02d} reached. "
+                    f"Proceeding with current lineup data.")
+                break
 
-                log(f"  Lineup s_no={s_no}: retry in 5min (attempt {attempt})")
-                if attempt < max_attempts and current_minutes() < deadline_min - 5:
-                    time.sleep(300)
-                else:
-                    break
+            # 모든 경기 라인업 갱신
+            for g in group:
+                fetch_lineup(g["s_no"], force=True)
 
-            if not lineup_ok:
-                log(f"  WARNING: Lineup not available for s_no={s_no}")
-                all_lineups_ok = False
+            # 배터 확정 여부 체크
+            all_confirmed = all(lineup_batters_confirmed(g["s_no"]) for g in group)
+            if all_confirmed:
+                log(f"  All batting lineups confirmed for {hm} group!")
+                break
+
+            # 미확정 경기 출력
+            for g in group:
+                confirmed = lineup_batters_confirmed(g["s_no"])
+                log(f"  s_no={g['s_no']}: batting lineup {'confirmed' if confirmed else 'NOT confirmed (SP only?)'}")
+
+            remaining = (deadline_min - now_min) * 60
+            wait_sec = min(retry_interval_sec, max(0, remaining - 30))
+            if wait_sec <= 0:
+                log(f"  No time left to retry. Proceeding.")
+                break
+            log(f"  Batting lineup not ready yet. Retrying in {wait_sec//60}m {wait_sec%60}s "
+                f"(deadline in {remaining//60}m)...")
+            time.sleep(wait_sec)
 
         # Rebuild lineup table & run prediction for all today's games
         log(f"\n[Predict] Rebuilding lineup table & running pipeline ...")

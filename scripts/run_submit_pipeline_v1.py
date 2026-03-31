@@ -25,10 +25,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, HistGradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FEATURES_V1_CSV = os.path.expanduser("~/statiz/data/features_v1.csv")
@@ -87,7 +84,8 @@ def to_proba(model, X):
 
 def get_models(seed):
     """풀 모델 (백테스트 최적 설정, n_jobs=1 for EC2 안정성)
-    LR 제외: 416 피처에서 과적합 → 극단적 확률 출력 문제"""
+    LR 제외: 416 피처에서 과적합 → 극단적 확률 출력 문제
+    HGBDT 제외: lineup 피처가 0인 시즌 초반에 원정팀으로 과도한 bias 발생"""
     return {
         "RF_1200_d10": RandomForestClassifier(
             n_estimators=1200, max_depth=10, min_samples_leaf=5,
@@ -96,10 +94,6 @@ def get_models(seed):
         "ET_1400_d10": ExtraTreesClassifier(
             n_estimators=1400, max_depth=10, min_samples_leaf=3,
             max_features="sqrt", random_state=seed, n_jobs=1,
-        ),
-        "HGBDT": HistGradientBoostingClassifier(
-            learning_rate=0.05, max_iter=500, max_depth=4,
-            min_samples_leaf=20, random_state=seed,
         ),
     }
 
