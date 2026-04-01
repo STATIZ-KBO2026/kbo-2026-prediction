@@ -230,7 +230,7 @@ def phase1_daily_update(target, yesterday):
 
     # 1b. Fetch yesterday's schedule + boxscores + lineups
     log(f"\n[1b] Fetching yesterday's data ({yesterday_str}) ...")
-    fetch_schedule(yesterday, force=False)
+    fetch_schedule(yesterday, force=True)  # 경기 결과(점수) 포함된 버전으로 갱신
     ysched = os.path.join(RAW_SCHEDULE, f"{yesterday_str}.json")
     if os.path.exists(ysched):
         ygames = parse_schedule_games(ysched)
