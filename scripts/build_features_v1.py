@@ -427,14 +427,15 @@ def pythag_winpct(rs, ra, exponent=1.83):
         return 0.5
     return rs_e / den
 
-def team_recent_metrics(hist):
+def team_recent_metrics(hist, n_limit):
     # hist: deque[(rs, ra, win01)]
-    n = len(hist)
+    items = list(hist)[-n_limit:]
+    n = len(items)
     if n == 0:
         return 0, 0.0, 0.0, 0.0
-    rs = sum(x[0] for x in hist)
-    ra = sum(x[1] for x in hist)
-    w = sum(x[2] for x in hist)
+    rs = sum(x[0] for x in items)
+    ra = sum(x[1] for x in items)
+    w = sum(x[2] for x in items)
     return n, div(rs, n), div(ra, n), div(w, n)
 
 def recent_count_by_days(date_hist, cur_ymd, days):
@@ -945,8 +946,8 @@ def main():
             expected_run_edge_homeaway = (hhrs - aara) - (aars - hhra)
             pregame_wp[s_no] = (hwp, awp)
 
-            h_r5g, h_r5rs, h_r5ra, h_r5wp = team_recent_metrics(team_recent[home])
-            a_r5g, a_r5rs, a_r5ra, a_r5wp = team_recent_metrics(team_recent[away])
+            h_r5g, h_r5rs, h_r5ra, h_r5wp = team_recent_metrics(team_recent[home], 6)
+            a_r5g, a_r5rs, a_r5ra, a_r5wp = team_recent_metrics(team_recent[away], 6)
             h_rest = rest_days(team_last_game_date.get(home), d)
             a_rest = rest_days(team_last_game_date.get(away), d)
             h_consec = team_consec_days.get(home, 0)

@@ -239,14 +239,40 @@ def main():
     # ── Step 5: 예측 CSV 저장 ──
     print(f"\n[Step 5] Saving predictions → {args.pred_csv}")
     pred_rows = []
+    
+    # 탱탱볼 휴리스틱 가중치 상수
+    TENG_TENG_WEIGHT = 0.40
+
     for i, r in enumerate(test_rows):
+        # 1. 원본 예측 확률
+        orig_p_homewin = float(final_pred[i])
+        
+        # 2. 휴리스틱(Teng-Teng Ball) 조정: 장타력 우위 및 선발 피장타 우위
+        h_slg = safe_float(r.get("home_lineup_avg_slg"))
+        a_slg = safe_float(r.get("away_lineup_avg_slg"))
+        h_sp_slg_ag = safe_float(r.get("home_sp_SLG_against"))
+        a_sp_slg_ag = safe_float(r.get("away_sp_SLG_against"))
+        
+        lineup_slg_edge = h_slg - a_slg
+        sp_slg_ag_edge = a_sp_slg_ag - h_sp_slg_ag  # 홈팀 선발 피장타율이 낮을수록 양수(+)
+        total_slg_edge = lineup_slg_edge + sp_slg_ag_edge
+        
+        # 보정
+        heuristic_adj = total_slg_edge * TENG_TENG_WEIGHT
+        adj_p_homewin = max(0.01, min(0.99, orig_p_homewin + heuristic_adj))
+        
+        print(f"    [Heuristic] s_no={r.get('s_no')} : "
+              f"SLG Edge(Batters {lineup_slg_edge:+.3f} + Pitcher {sp_slg_ag_edge:+.3f} = Total {total_slg_edge:+.3f}) "
+              f"-> Adj {heuristic_adj:+.3f} | {orig_p_homewin:.3f} -> {adj_p_homewin:.3f}")
+
         pred_rows.append({
             "date": r.get("date", ""),
             "s_no": r.get("s_no", ""),
             "homeTeam": r.get("homeTeam", ""),
             "awayTeam": r.get("awayTeam", ""),
-            "p_homewin": round(float(final_pred[i]), 6),
-            "percent": round(float(final_pred[i]) * 100.0, 2),
+            "p_homewin": round(adj_p_homewin, 6),
+            "percent": round(adj_p_homewin * 100.0, 2),
+            "raw_p_homewin": round(orig_p_homewin, 6),
         })
         # 개별 모델 예측도 추가
         for name in model_names:
